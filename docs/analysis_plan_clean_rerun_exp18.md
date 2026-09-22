@@ -193,3 +193,83 @@ estimand:
   folds.
 - Size-matched draws are compared with the own-cohort and mixed arms by
   paired DeLong per draw (exploratory).
+
+## Addendum A (2026-09-22): exp19 serialised clinical text + language-model embeddings
+
+Added before any exp19 result existed. Exploratory throughout. Reported in the
+Supplementary unless it changes a conclusion.
+
+**Motivation.** The supervisor suggested converting the tabular (and text)
+data into text and embedding it with a language model. The template follows
+the research group's second-regimen plan (Duong Nhu).
+
+**Texts** (`shared/serialise_clinical.py`). One paragraph per patient, built
+from the harmonised features with identical wording for both cohorts:
+
+- Sex; age as a whole number; more than five pre-treatment seizures; focal or
+  generalised onset.
+- The ten history items: family history, febrile seizure, cerebral infection,
+  birth trauma, head injury, drug abuse, alcohol abuse, cerebrovascular
+  disease, psychiatric comorbidities, learning disability.
+- CT/MRI findings (normal / abnormal but not epileptogenic / epileptogenic)
+  and EEG findings (normal / abnormal but not epileptiform / epileptiform).
+- The first ASM by name.
+- Nothing about dose, outcome, reason for change, time to failure or later
+  regimens, enforced by a unit test. Missing values get one fixed wording.
+
+Three variants:
+
+- **V1:** the paragraph.
+- **V1-nodrug:** V1 without the drug sentence.
+- **V2:** V1 followed by the free-text EEG report. V2 uses the existing text
+  cohorts (117 Melbourne and 207 HEP1 reports).
+
+**Encoders** (frozen; embeddings computed once and cached):
+
+- PubMedBERT (`NeuML/pubmedbert-base-embeddings`) and ClinicalBERT
+  (`medicalai/ClinicalBERT`): mask-aware mean pooling, 512 tokens.
+- Llama-3.1-8B (`meta-llama/Llama-3.1-8B`, base): bfloat16 on CPU. Primary
+  pooling is the mask-aware mean over final hidden states; the last-token
+  state is a secondary pooling. Maximum 2048 tokens.
+
+**Model.** One late-fusion MLP class for every exp19 configuration:
+
+- each input is projected by Linear -> 64, ReLU, LayerNorm, dropout 0.3;
+- the projections are concatenated;
+- the head is Linear -> 64, ReLU, dropout, then Linear -> 2.
+
+Hyperparameters equal the portable non-EEG models: AdamW (lr 1e-3, weight
+decay 1e-4), batch 16, at most 80 epochs, patience 15, class-weighted
+cross-entropy.
+
+**Configurations.**
+
+- Serialised:
+  - A = V1
+  - B = V1-nodrug + ChemBERTa SMILES
+  - C = V1 + SMILES
+  - D = V2
+
+  Each runs with the three encoders; Llama also runs with last-token pooling.
+- Tabular comparators, same model class, folds and seeds:
+  - T4 = 19-feature clinical
+  - T5a = clinical + SMILES
+  - T6a = clinical + mean-pooled ClinicalBERT report embedding + SMILES
+
+**Protocol.** Section 2's clean CV on the Melbourne cohort (multilabel outer
+folds, inner 20% early stopping and threshold, seeds 42-46). Every fold's
+model is also applied to HEP1 (five-fold ensemble per seed, as in Section 5).
+exp18 gains configurations A and D for each encoder (arms and metrics as in
+Section 6, seeds 42-46).
+
+**Comparisons** (exploratory; paired DeLong per seed on the same patients
+and a Nadeau-Bengio corrected t-test over seed x fold, no significance
+claims):
+
+- B vs T5a: does text encoding of the clinical features beat the tabular MLP?
+- A vs T5a
+- A vs C and B vs C: drug by name vs by structure
+- D vs T6a: one document vs separate branches
+- the Llama pooling variants
+
+Both internal and HEP1 external AUCs are reported.
