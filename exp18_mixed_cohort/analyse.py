@@ -38,12 +38,13 @@ from sklearn.metrics import roc_auc_score
 
 from shared.stats_util import delong_ci, delong_test
 
-from .config import OUT_DIR
+from .config import CONFIGS, OUT_DIR
 
 COHORTS = ("MEL", "HEP")
 OWN = {"MEL": "mel_only", "HEP": "hep_only"}
 OTHER = {"MEL": "hep_only", "HEP": "mel_only"}
-FILE_RE = re.compile(r"predictions_(Exp\d+[a-z]*)(_noRMH)?(_dedup)?_seed(\d+)\.csv$")
+FILE_RE = re.compile(r"predictions_(" + "|".join(re.escape(c) for c in sorted(CONFIGS, key=len, reverse=True))
+                     + r")(_noRMH)?(_dedup)?_seed(\d+)\.csv$")
 
 
 def auc_or_nan(y, p) -> float:

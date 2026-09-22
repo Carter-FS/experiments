@@ -11,7 +11,19 @@ from shared.hep_cohort import EXPERIMENTS_ROOT
 
 CONFIGS_NON_EEG = ("Exp4a", "Exp5a", "Exp5b")
 CONFIGS_EEG = ("Exp5c", "Exp6b", "Exp7a")
-CONFIGS = CONFIGS_NON_EEG + CONFIGS_EEG
+
+# exp19 additions (analysis plan Addendum A.1): serialised-text configurations
+# A (v1) and D (v2) per encoder, and same-class tabular comparators, all
+# shared.portable_models.LateFusionMLP. Input names follow exp19's CONFIGS;
+# "emb:<variant>:<encoder>" is looked up in the exp19 embedding store.
+LF_INPUTS = {}
+for _enc in ("pubmedbert", "clinicalbert", "llama31_8b"):
+    LF_INPUTS[f"S19A_{_enc}"] = (f"emb:v1:{_enc}",)
+    LF_INPUTS[f"S19D_{_enc}"] = (f"emb:v2:{_enc}",)
+LF_INPUTS["LF_T5a-full"] = ("clinical_full", "smiles")
+LF_INPUTS["LF_T6a"] = ("clinical", "rep:clinicalbert", "smiles")
+CONFIGS_LF = tuple(LF_INPUTS)
+CONFIGS = CONFIGS_NON_EEG + CONFIGS_EEG + CONFIGS_LF
 
 # Which cached modalities each configuration consumes besides clinical features.
 MODALITIES = {
@@ -22,14 +34,21 @@ MODALITIES = {
     "Exp6b": ("smiles", "eeg"),
     "Exp7a": ("text", "smiles", "eeg"),
 }
+# "text" restricts the pooled cohort to patients with a usable EEG report.
+for _cfg, _inputs in LF_INPUTS.items():
+    MODALITIES[_cfg] = tuple(
+        (["text"] if any(":v2:" in n or n.startswith("rep:") for n in _inputs) else [])
+        + (["smiles"] if "smiles" in _inputs else []))
 
 # Portable model per configuration (shared/portable_models.py). Exp6b uses the
 # pre-specified EEG2Vec encoder rather than the published SimpleCNN one.
 PORTABLE_MODEL = {cfg: cfg for cfg in CONFIGS}
 PORTABLE_MODEL["Exp6b"] = "Exp6b_eeg2vec"
+PORTABLE_MODEL.update({cfg: f"LF:{cfg}" for cfg in CONFIGS_LF})
 
 SEEDS = {cfg: (42, 43, 44, 45, 46) for cfg in CONFIGS_NON_EEG}
 SEEDS.update({cfg: (42, 43, 44) for cfg in CONFIGS_EEG})
+SEEDS.update({cfg: (42, 43, 44, 45, 46) for cfg in CONFIGS_LF})
 
 # Every arm scores every outer test patient in both cohorts.
 ARMS = ("mixed", "mel_only", "hep_only")

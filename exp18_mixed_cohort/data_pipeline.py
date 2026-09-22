@@ -34,7 +34,7 @@ from shared.portable_models import (
     stack_eeg_for_pids,
 )
 
-from .config import HEP_EEG_CACHE, MEL_EEG_CACHE, MODALITIES, RMH_PREFIX, STRATIFY
+from .config import HEP_EEG_CACHE, LF_INPUTS, MEL_EEG_CACHE, MODALITIES, RMH_PREFIX, STRATIFY
 
 
 @dataclass
@@ -109,6 +109,17 @@ def load_pooled(config: str, exclude_rmh: bool = False, exclude_hep_pids=()) -> 
         # The raw caches are ~4 GB; only the stacked cohort windows are needed.
         del eeg_caches, parts
         gc.collect()
+
+    if config in LF_INPUTS:
+        # Fold-independent exp19 text embeddings (standardised per arm at training time).
+        from exp19_serialised_clinical.run_experiments import lookup
+        from exp19_serialised_clinical.texts import texts
+        for name in LF_INPUTS[config]:
+            if name.startswith("emb:"):
+                _, variant, encoder = name.split(":")
+                modalities[name] = lookup(encoder, "mean", texts(df, variant))
+            elif name.startswith("rep:"):
+                modalities[name] = lookup(name[4:], "mean", texts(df, "rep"))
 
     labels = torch.from_numpy(df["outcome"].to_numpy().astype(np.int64))
     return PooledCohort(config, df, modalities, labels, joint_key(df, STRATIFY))

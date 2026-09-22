@@ -273,3 +273,131 @@ claims):
 - the Llama pooling variants
 
 Both internal and HEP1 external AUCs are reported.
+
+### A.1 (2026-09-22, pre-result): amendments after two independent design and code audits
+
+No exp19 embedding of the real cohorts has been computed and no outcome
+model has been fitted on these representations. These amendments replace
+the corresponding parts of Addendum A.
+
+**Revisions pinned.**
+
+| Model | Revision |
+|---|---|
+| Llama-3.1-8B | d04e592bb4f6aa9cfee91e2e20afa771667e1d4b |
+| Llama-3.1-8B-Instruct | 0e9e39f249a16976918f6564b8830bc894c89659 |
+| PubMedBERT | b79526d6ef3645e0df4530322e266f24c829f5ef |
+| ClinicalBERT | f7c7f65227cb311f33a79c24858d875876d478ac |
+
+**Serialiser.**
+
+- Input is validated: out-of-range codes, unknown drugs and missing columns
+  raise errors instead of silently becoming "unknown".
+- Binary flags are exact 0/1.
+- The dose sentence is omitted because neither cohort records dose.
+
+**Variants.**
+
+- `v1` and `v1nodrug` keep one fixed "unknown" wording for missing values.
+- `v1imp` and `v1nodrugimp` fill missing values before serialising, the way
+  the paper's tabular preprocessor does (training-fold mode for binary and
+  categorical features, training-fold mean age). Fills are computed from
+  each fold's fit rows and applied to Melbourne and HEP1 alike. Fold modes
+  differ (the CT/MRI mode alternates between normal and epileptogenic), so
+  every distinct text any fold produces is embedded.
+- `v2` = `v1` plus the EEG report.
+- `rep` = the EEG report alone.
+
+**Embeddings.**
+
+- Each unique text is embedded once per encoder, keyed by its hash.
+- BERT inputs longer than 512 tokens are chunked: 510-token windows, a
+  mask-aware mean per window, then a token-weighted average across windows.
+- Llama: at most 4096 tokens, BOS excluded from the mean, pooling in fp32,
+  one text per forward pass.
+
+**Inputs.**
+
+- Every frozen embedding input (text, report, SMILES) is z-scored within
+  each fold using the fit rows only.
+- The paper preprocessor feeds T4, T5a and T6a.
+- A new information-matched preprocessor, fitted on the fit rows, feeds
+  T4-full and T5a-full:
+  - binary features: mode-filled, plus a missing indicator;
+  - age: z-scored, mean-filled, plus a missing indicator;
+  - CT/MRI and EEG findings: one-hot over normal / non-epileptiform /
+    epileptiform / missing.
+
+**Configurations.** Each serialised configuration runs per encoder and
+pooling. C is removed.
+
+| Config | Inputs |
+|---|---|
+| A | [v1] |
+| B | [v1nodrug, SMILES] |
+| B-imp | [v1nodrugimp, SMILES] |
+| E | [v1nodrug] |
+| E-imp | [v1nodrugimp] |
+| D | [v2] |
+| D-split | [v1, rep] |
+| T4 | paper clinical |
+| T5a | paper clinical, SMILES |
+| T6a | paper clinical, ClinicalBERT rep (chunked, computed here), SMILES |
+| T4-full | information-matched clinical |
+| T5a-full | information-matched clinical, SMILES |
+
+**Estimators.**
+
+- **MLP (primary):** LateFusionMLP with the portable hyperparameters.
+- **PCA32:** each embedding input reduced to 32 components fitted on the
+  fit rows, then the MLP. Not run for configurations without embedding
+  inputs.
+- **LR:** L2 logistic regression on the concatenated standardised inputs.
+  C is chosen from {0.001, 0.01, 0.1, 1, 10} by AUC on the early-stopping
+  set, and the model is fitted on the fit rows.
+
+**Primary contrast** (the only confirmatory one): B vs T5a-full, MLP
+estimator, for PubMedBERT-mean, ClinicalBERT-mean and Llama-mean. Holm
+adjustment over these three.
+
+- **Internal:** Nadeau-Bengio corrected t over seed x fold AUC
+  differences, with a 95% CI, read against a margin of 0.05:
+  - equivalent if the CI lies within +/-0.05;
+  - text better if the lower bound is above 0;
+  - tabular better if the upper bound is below 0;
+  - otherwise inconclusive.
+- **External (HEP1):** paired patient-level bootstrap (2000 resamples) of
+  the AUC difference on seed-averaged ensemble scores. Run on all HEP1
+  patients, on the complete-case subgroup (no missing value among the 16
+  features) and on the seen-drug subgroup (ASM present in Melbourne
+  training).
+
+**Descriptive only:**
+
+- A vs T5a
+- B-imp vs T5a
+- E vs T4-full
+- E-imp vs T4
+- D vs D-split
+- D-split vs T6a
+- Llama mean vs last-token pooling
+- the three estimators against one another
+- a fold-internal cohort probe per embedding
+
+**Zero-shot baseline** (descriptive). Llama-3.1-8B-Instruct with its chat
+template, no training.
+
+- System message: "You are an experienced epileptologist."
+- User message: the v1 text, then a blank line, then "Will this patient be
+  seizure-free for at least 12 months on this first antiseizure medication?
+  Answer Yes or No."
+- Score: P("Yes") / (P("Yes") + P("No")) from the next-token distribution.
+- Reported: AUC with a DeLong CI on all Melbourne patients and on HEP1.
+
+**exp18.** Configurations A and D per encoder (MLP) are added, with the
+same-class comparators T5a-full and T6a. Standardisation, PCA and the
+preprocessors are fitted on each arm's fit rows. Arms and metrics follow
+Section 6, seeds 42-46.
+
+**Placement.** Main text vs Supplementary is decided with the supervisor
+after the results. No promotion rule is pre-specified.

@@ -43,6 +43,7 @@ from .config import (
     ARMS,
     CONFIGS,
     INNER_FRAC,
+    LF_INPUTS,
     N_SPLITS,
     OUT_DIR,
     PORTABLE_MODEL,
@@ -59,6 +60,8 @@ logger = logging.getLogger("exp18")
 def train_predict(pooled: PooledCohort, fit_idx, es_idx, test_idx, device) -> tuple[np.ndarray, float]:
     """Train on ``fit_idx``, early-stop on ``es_idx``; return (test probs, es threshold)."""
     cfg, y = PORTABLE_MODEL[pooled.config], pooled.labels
+    if pooled.config in LF_INPUTS:
+        return _train_predict_late_fusion(pooled, cfg, fit_idx, es_idx, test_idx, device)
     mods = dict(pooled.modalities)
     mods["clinical"] = clinical_features(pooled, fit_idx)
     if cfg in portable.EEG_CONFIGS:
@@ -73,6 +76,29 @@ def train_predict(pooled: PooledCohort, fit_idx, es_idx, test_idx, device) -> tu
         es_probs = portable.predict(model, sub(es_idx), cfg, device)
         test_probs = portable.predict(model, sub(test_idx), cfg, device)
     return test_probs, youden_threshold(y[es_idx].numpy(), es_probs)
+
+
+def _train_predict_late_fusion(pooled: PooledCohort, cfg: str, fit_idx, es_idx, test_idx, device):
+    """exp19 configurations (LateFusionMLP): embedding inputs z-scored and clinical
+    preprocessors fitted on this arm's fit rows."""
+    from exp19_serialised_clinical.tabular import FullClinicalPreprocessor
+    y, tensors = pooled.labels, []
+    for name in LF_INPUTS[pooled.config]:
+        if name == "clinical":
+            tensors.append(clinical_features(pooled, fit_idx))
+        elif name == "clinical_full":
+            pre = FullClinicalPreprocessor().fit(pooled.df.iloc[fit_idx])
+            tensors.append(torch.from_numpy(pre.transform(pooled.df)))
+        else:
+            x = pooled.modalities[name].float()
+            mu, sd = x[fit_idx].mean(0), x[fit_idx].std(0, unbiased=False).clamp(min=1e-6)
+            tensors.append((x - mu) / sd)
+    dims = [t.shape[1] for t in tensors]
+    sub = lambda idx: [t[idx] for t in tensors]  # noqa: E731
+    model = portable.train_fold(cfg, sub(fit_idx), sub(es_idx), y[fit_idx], y[es_idx], device,
+                                model_factory=lambda: portable.LateFusionMLP(dims))
+    es_probs = portable.predict(model, sub(es_idx), cfg, device)
+    return portable.predict(model, sub(test_idx), cfg, device), youden_threshold(y[es_idx].numpy(), es_probs)
 
 
 def sizematched_subsample(pooled: PooledCohort, train_idx, n: int, random_state: int) -> np.ndarray:

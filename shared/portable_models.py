@@ -83,7 +83,34 @@ def build_model(config: str, device: torch.device) -> nn.Module:
     raise ValueError(f"Unknown config: {config}")
 
 
+# Configurations named "LF:<anything>" use LateFusionMLP built by a caller-supplied
+# factory (exp19): each input tensor is one modality, in the order given.
+LATE_FUSION_PREFIX = "LF:"
+
+
+class LateFusionMLP(nn.Module):
+    """Generic late fusion: each input -> Linear(d, 64), ReLU, LayerNorm, dropout;
+    concatenate; Linear -> 64, ReLU, dropout, Linear -> 2. The block the paper
+    describes for its late-fusion MLP, parameterised by the input dimensions so
+    serialised-text and tabular inputs share one architecture."""
+
+    def __init__(self, input_dims: list[int], hidden: int = 64, dropout: float = DROPOUT):
+        super().__init__()
+        self.branches = nn.ModuleList(
+            nn.Sequential(nn.Linear(d, hidden), nn.ReLU(), nn.LayerNorm(hidden), nn.Dropout(dropout))
+            for d in input_dims
+        )
+        self.head = nn.Sequential(
+            nn.Linear(hidden * len(input_dims), hidden), nn.ReLU(), nn.Dropout(dropout), nn.Linear(hidden, 2),
+        )
+
+    def forward(self, *inputs: torch.Tensor) -> torch.Tensor:
+        return self.head(torch.cat([b(x) for b, x in zip(self.branches, inputs)], dim=1))
+
+
 def forward_pass(model: nn.Module, batch: tuple, config: str) -> torch.Tensor:
+    if config.startswith(LATE_FUSION_PREFIX):
+        return model(*batch)
     if config == "Exp4a":
         clinical = batch[0]
         return model(clinical)
@@ -100,9 +127,14 @@ def train_fold(
     train_labels: torch.Tensor,
     val_labels: torch.Tensor,
     device: torch.device,
+    model_factory=None,
 ) -> nn.Module:
-    """Train a model with early stopping on a held-out val split."""
-    model = build_model(config, device)
+    """Train a model with early stopping on a held-out val split.
+
+    ``model_factory`` (a no-argument callable returning an nn.Module) replaces
+    build_model for "LF:" late-fusion configurations.
+    """
+    model = model_factory().to(device) if model_factory is not None else build_model(config, device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
     class_counts = np.bincount(train_labels.numpy())
     cw = torch.tensor(1.0 / np.maximum(class_counts, 1), dtype=torch.float32)

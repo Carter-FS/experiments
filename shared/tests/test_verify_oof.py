@@ -34,6 +34,12 @@ FILENAME_COHORTS = {
     "exp11_predictions/predictions_oof_exp11_exp11_3a_clinicalbert_chemberta_trf.json": 107,
     "exp11_predictions/predictions_oof_exp11_exp11_6b_chemberta_meanmax_asmweighted.json": 147,
     "exp11_predictions/predictions_oof_exp11_exp11_7a_pubmedbert_chemberta_meanmax.json": 107,
+    "exp19_predictions/predictions_oof_exp19_A_llama31_8b_mean_mlp_sp-multilabel_iv20_s42.json": 198,
+    "exp19_predictions/predictions_oof_exp19_T5a-full_lr_sp-multilabel_iv20_s43.json": 198,
+    "exp19_predictions/predictions_oof_exp19_B-imp_pubmedbert_mean_pca32_sp-multilabel_iv20_s43.json": 198,
+    "exp19_predictions/predictions_oof_exp19_D_pubmedbert_mean_mlp_sp-multilabel_iv20_s44.json": 117,
+    "exp19_predictions/predictions_oof_exp19_D-split_llama31_8b_last_mlp_sp-multilabel_iv20_s44.json": 117,
+    "exp19_predictions/predictions_oof_exp19_T6a_pca32_sp-multilabel_iv20_s45.json": 117,
 }
 
 
