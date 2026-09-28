@@ -6,7 +6,7 @@
 #
 # Submit from the experiments repo root on M3 (after pulling both repos and
 # running `bash rerun_clean.sh preflight`, which also creates logs/):
-#     PROTOCOL=refit bash rerun_clean.sh list | cat -n        # index <-> task (269 items)
+#     PROTOCOL=refit bash rerun_clean.sh list | cat -n        # index <-> task (263 items)
 #     sbatch --export=ALL,PROTOCOL=refit rerun_clean.slurm    # every refit item, 24 at a time
 #     sbatch --export=ALL,PROTOCOL=innersplit --array=0-218%24 rerun_clean.slurm
 #     sbatch --export=ALL,PROTOCOL=refit --array=0,5,14 rerun_clean.slurm   # a subset
@@ -15,7 +15,7 @@
 #SBATCH --job-name=clean_rerun
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:1
-#SBATCH --array=0-268%24
+#SBATCH --array=0-262%24
 #SBATCH --time=16:00:00
 #SBATCH --mem=64G
 #SBATCH --cpus-per-task=4

@@ -548,3 +548,49 @@ bootstrap shared across seeds: each replicate resamples patients once, applies
 that resample to every seed's file (each seed keeps its own fold assignment),
 recomputes each seed's pooled estimate and averages over seeds. 1000
 replicates, 2.5 and 97.5 percentiles. Seed-to-seed SD is still reported.
+
+### B.9 (2026-09-28, before any Addendum B run): amendments after an independent audit
+
+An independent read-only audit compared B.1-B.8 with the code. These
+clarifications and corrections are made before any run under Addendum B:
+
+- **B.2 wording.** Inner folds are stratified on the outcome alone (the
+  outer split is multilabel on outcome, focal and sex); exp18 uses its joint
+  outcome x cohort key for both. "With the same seeds" means the per-fold
+  determinism seed is set once before the inner runs; the refit model is
+  initialised from the same seeded stream after them (reproducible, not
+  reseeded). For logistic regression, ties in pooled inner AUC go to the
+  smallest C.
+- **B.4 scope.** exp18's serialised-text configurations use a paragraph that
+  omits the seizure-type sentence and the drug and alcohol items (variant
+  `v1xc`), for the same reason as the tabular drop. exp19's own external
+  validation (Melbourne to HEP1, Supplementary) keeps all 16 features in text
+  and table, as in Addendum A.
+- **B.5 scope.** The harmonised label is run for the HEP1 forward, forward
+  EEG and reverse scripts and for every exp18 configuration, under the refit
+  protocol only; exp19 external does not run it. Durations are whole days, so
+  the rule is a regimen lasting 366 days or more.
+- **B.6 scope and ratio.** The cohort-stratified selection applies to the
+  refit protocol (the mixed arm and the size-matched draws); the inner-split
+  rerun keeps Section 6's pooled-AUC early stopping. The Nadeau-Bengio ratio
+  for each test cohort is n_test / n_train of that cohort's own share of each
+  outer fold (the own-cohort arm's training set), and the same ratio is used
+  for the refit (primary), inner-split and harmonised-label tests.
+- **B.7 details.** D-tok contrasts carry p-values but are descriptive. The
+  Qwen3-Embedding instruction follows the model card's
+  "Instruct: ... Query: " format with our own task sentence. The primary
+  verdict applies Holm over the three encoders to both families: equivalence
+  when the Holm-adjusted two one-sided tests give p < 0.05, otherwise
+  superiority when the Holm-adjusted two-sided Nadeau-Bengio test gives
+  p < 0.05, otherwise inconclusive. Zero-shot scores are written to
+  `zeroshot_fp32_<cohort>.csv`; exp19 and the zero-shot baseline run on the
+  laptop, not in the M3 array.
+- **B.8 details.** Within each bootstrap replicate a seed's pooled estimate
+  is the random-effects re-pool of the resampled fold estimates with that
+  seed's fold variances held fixed. exp18 keeps the Section 6 per-seed DeLong
+  intervals.
+- **External operating point.** In clean HEP1 runs, external sensitivity and
+  specificity are reported at a transported threshold, the mean over the five
+  folds of each fold's inner Youden threshold, applied to the five-fold
+  ensemble score; the scored cohort's own Youden point is kept as `_ownthr`
+  (descriptive).

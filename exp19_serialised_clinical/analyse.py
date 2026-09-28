@@ -12,9 +12,10 @@ inner-split protocol (pre-registered); --protocol chooses.
     exp19_summary.csv    means over seeds, plus HEP1 AUC of the seed-averaged ensemble with a bootstrap CI
     exp19_contrasts.csv  the primary contrast (B vs T5a-full, MLP; three encoders; internal
                          Nadeau-Bengio two one-sided tests against the +/-0.05 margin with Holm, i.e.
-                         the 90% CI, and the 95% CI for superiority (plan B.7); external paired
+                         the 90% CI, and the Holm-adjusted two-sided test for superiority (plan B.7,
+                         B.9); external paired
                          bootstrap) and the descriptive contrasts
-    exp19_zeroshot.csv   zero-shot AUCs (float32 answer logits, plan B.7)
+    exp19_zeroshot_fp32.csv   zero-shot AUCs (float32 answer logits, plan B.7)
     exp19_probe.csv      fold-internal cohort probe (Melbourne vs HEP1) per representation
 
     python -m exp19_serialised_clinical.analyse
@@ -170,15 +171,14 @@ def tost_p(d: np.ndarray, ratio: float, margin: float = MARGIN) -> float:
     return float(max(p_low, p_high))
 
 
-def verdict(lo95: float, hi95: float, p_tost_holm: float, margin: float = MARGIN) -> str:
-    """Equivalence first (Holm-adjusted TOST, i.e. the 90% CI inside the margin),
-    then superiority from the 95% CI (plan B.7)."""
+def verdict(diff: float, p_holm: float, p_tost_holm: float, margin: float = MARGIN) -> str:
+    """Equivalence first (Holm-adjusted two one-sided tests, i.e. the 90% CI
+    inside the margin), then superiority from the Holm-adjusted two-sided
+    Nadeau-Bengio test (Addendum A.1 Holm family; plan B.7 and B.9)."""
     if p_tost_holm < 0.05:
         return f"equivalent within +/-{margin}"
-    if lo95 > 0:
-        return "text better"
-    if hi95 < 0:
-        return "tabular better"
+    if p_holm < 0.05:
+        return "text better" if diff > 0 else "tabular better"
     return "inconclusive"
 
 
@@ -223,7 +223,7 @@ def contrasts(oof, ext, masks) -> pd.DataFrame:
                                  holm([r["internal_tost_p"] for r in rows])):
         row["internal_nb_p_holm"] = p_adj
         row["internal_tost_p_holm"] = t_adj
-        row["verdict"] = verdict(row["internal_ci_lo"], row["internal_ci_hi"], t_adj)
+        row["verdict"] = verdict(row["internal_diff"], p_adj, t_adj)
     for enc, spec in ENCODERS.items():
         for pool in POOLINGS[spec["kind"]]:
             s = f"_{enc}_{pool}"

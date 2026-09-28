@@ -252,6 +252,16 @@ preflight () {
 # written for the inner split; the refit protocol swaps the suffix and adds
 # its decomposition cells.
 expected_files () {
+    local s a b
+    # Every exp9 ablation and every exp11 base (one work item each).
+    for s in "${SEEDS[@]}"; do
+        for a in "${EXP9_ABLATIONS[@]}"; do
+            echo "exp9_predictions/predictions_oof_exp9_${a}_sp-multilabel_${SEL}_s${s}.json"
+        done
+        for b in 3a 6b 7a; do
+            echo "exp11_predictions/predictions_oof_exp11_exp11_${b}_*_sp-multilabel_${SEL}_s${s}.json"
+        done
+    done
     if [[ "$PROTOCOL" == refit ]]; then
         grep -v '^exp4_decomposition/' clean_rerun_expected.txt | sed 's/_sp-multilabel_iv20_s/_sp-multilabel_rf5_s/'
         for s in "${SEEDS[@]}"; do
@@ -268,6 +278,8 @@ expected_files () {
 # One-off, before the PROTOCOL=innersplit rerun: move every inner-split output
 # written before the 2026-09-28 outcome-label correction (and its done markers)
 # into outputs/_archive_prepolarity_20260928/, keeping the directory layout.
+# Only files last modified before that date move, so nothing a post-correction
+# run wrote (the refit decomposition writes inner-split-named cells too) can.
 archive_iv20 () {
     local dest="$OUT/_archive_prepolarity_20260928" n=0 f
     mkdir -p "$dest"
@@ -277,7 +289,7 @@ archive_iv20 () {
     # Inner-split and decomposition files by suffix; exp18 and exp19's HEP1
     # ensembles by the absence of a refit (_rf<k>) tag.
     done < <(find -L "$OUT"/exp*_predictions "$OUT"/exp4_decomposition "$OUT"/exp18_mixed_cohort \
-                 -maxdepth 1 -type f \
+                 -maxdepth 1 -type f -not -newermt 2026-09-28 \
                  \( -name '*_sp-multilabel_iv20_*' -o -name '*_sp-legacy_iv20_*' -o -name '*_sp-multilabel_iv0_*' \
                     -o -name 'predictions_oof_exp4a_mlp_s4?.json' -o -name 'results_*_s4?.json' \
                     -o \( -regex '.*/\(predictions\|folds\|run\)_[A-Za-z0-9_-]*_seed4[2-6]\.\(csv\|json\)' \
@@ -286,7 +298,8 @@ archive_iv20 () {
     while IFS= read -r -d '' f; do
         mkdir -p "$dest/thesis_output"
         mv -n "$f" "$dest/thesis_output/" && n=$((n + 1))
-    done < <(find "$THESIS/analysis/output" -maxdepth 1 -type f -name 'hep_*_sp-multilabel_iv20_s*' -print0)
+    done < <(find "$THESIS/analysis/output" -maxdepth 1 -type f -not -newermt 2026-09-28 \
+                 -name 'hep_*_sp-multilabel_iv20_s*' -print0)
     [[ -d "$OUT/_clean_rerun" ]] && mv -n "$OUT/_clean_rerun" "$dest/_clean_rerun" && n=$((n + 1))
     echo "moved $n file(s)/dir(s) to $dest"
 }
@@ -296,7 +309,7 @@ items () {
     for t in "${TASKS[@]}"; do
         for s in "${SEEDS[@]}"; do
             # exp18 EEG configurations run seeds 42-44 only; do not queue no-op GPU jobs.
-            case "$t" in exp18_Exp5c|exp18_Exp6b|exp18_Exp7a)
+            case "$t" in exp18_Exp5c|exp18_Exp6b|exp18_Exp7a|exp18_h12_Exp5c|exp18_h12_Exp6b|exp18_h12_Exp7a)
                 [[ "$EXP18_EEG_SEEDS" == *" $s "* ]] || continue ;;
             esac
             echo "$t:$s"

@@ -184,7 +184,8 @@ class ClinicalFeaturePreprocessor:
         self.categorical_modes = {}
         for col in self.categorical_features:
             col_data = pd.to_numeric(df[col], errors="coerce")
-            mode_val = col_data.mode()
+            # Mode over the valid levels only, so the fill is always one of them.
+            mode_val = col_data.where(col_data.isin(self.CATEGORY_LEVELS)).mode()
             self.categorical_modes[col] = mode_val.iloc[0] if len(mode_val) > 0 else 1.0
 
         self._fitted = True
