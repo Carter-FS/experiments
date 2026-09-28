@@ -98,17 +98,19 @@ TASKS=(
     "${EXP9_ABLATIONS[@]/#/exp9_}"
     hep_forward hep_eeg hep_reverse hep_focal hep_reduced reve
     exp18_Exp4a exp18_Exp5a exp18_Exp5b exp18_Exp5c exp18_Exp6b exp18_Exp7a exp18_noRMH
-    # exp19 (Addendum A/B.7): tabular comparators, then the serialised-text
-    # configurations per encoder; needs outputs/exp19_embeddings (built on the
-    # laptop with exp19_serialised_clinical.embed and copied up).
-    exp19_tabular exp19_pubmedbert exp19_clinicalbert exp19_llama31_8b exp19_qwen3_embed_8b
-    "${EXP18_TEXT_CONFIGS[@]/#/exp18_}"
 )
 if [[ "$PROTOCOL" == refit ]]; then
     TASKS+=(exp4_decomp hep_forward_h12 hep_eeg_h12 hep_reverse_h12
-            exp18_h12_Exp4a exp18_h12_Exp5a exp18_h12_Exp5b exp18_h12_Exp5c exp18_h12_Exp6b exp18_h12_Exp7a
-            "${EXP18_TEXT_CONFIGS[@]/#/exp18_h12_}")
+            exp18_h12_Exp4a exp18_h12_Exp5a exp18_h12_Exp5b exp18_h12_Exp5c exp18_h12_Exp6b exp18_h12_Exp7a)
 fi
+# Added 2026-09-28 after the first arrays were queued: appended so the array
+# indices of every earlier item stay the same. exp19 (Addendum A/B.7):
+# tabular comparators, then the serialised-text configurations per encoder
+# (needs outputs/exp19_embeddings, built on the laptop and copied up); then
+# exp18's text and late-fusion configurations.
+TASKS+=(exp19_tabular exp19_pubmedbert exp19_clinicalbert exp19_llama31_8b exp19_qwen3_embed_8b
+        "${EXP18_TEXT_CONFIGS[@]/#/exp18_}")
+[[ "$PROTOCOL" == refit ]] && TASKS+=("${EXP18_TEXT_CONFIGS[@]/#/exp18_h12_}")
 
 # Both balance modes, as in the legacy rerun. CV is set per item (seed).
 balanced () {
