@@ -31,7 +31,7 @@ from exp2_fusion.models.aggregators import get_aggregator
 from exp2_fusion.training import train_epoch, evaluate
 from exp8_stratification.stratified_cv import get_multilabel_splits, get_outcome_only_splits
 from shared.cv_splits import add_cv_args, cv_suffix, fold_indices, outer_splits, rethreshold
-from shared.cv_splits import set_repeat_seed  # noqa: E402
+from shared.cv_splits import apply_cv_args  # noqa: E402
 from .config import RESULTS_DIR, CV_CONFIG
 
 logging.basicConfig(level=logging.INFO)
@@ -586,7 +586,7 @@ if __name__ == "__main__":
                         help="Directory for OOF prediction files (default: outputs/exp9_predictions).")
     add_cv_args(parser)
     args = parser.parse_args()
-    set_repeat_seed(args.cv_seed)  # repeated-CV seed; None keeps the original seeds
+    apply_cv_args(args)  # repeated-CV seed and refit protocol (plan B.2)
 
     if args.deterministic:
         from shared.determinism import enable_determinism

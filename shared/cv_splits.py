@@ -7,9 +7,13 @@ Outer splitters (``outer_splits``):
               description; exp2/5/9 already used it). The clean-rerun default.
   joint       StratifiedKFold on a composite key (exp18: outcome x cohort).
 
-``inner_val_split`` carves an early-stopping set out of an outer training fold
-so the outer test fold is never used for epoch selection, LR scheduling or the
-decision threshold. See docs/analysis_plan_clean_rerun_exp18.md.
+Selection protocols (docs/analysis_plan_clean_rerun_exp18.md):
+  legacy      early stopping and threshold on the outer test fold (archived).
+  innersplit  ``inner_val_split`` carves an early-stopping set out of each outer
+              training fold (Section 2; ``--inner-val 0.2``).
+  refit       inner 5-fold CV chooses the epoch count and threshold, then a
+              fresh model is refitted on the whole outer training fold
+              (Addendum B.2; ``--refit-folds 5``; shared/epoch_selection.py).
 """
 from __future__ import annotations
 
@@ -31,11 +35,33 @@ CLEAN_INNER_FRAC = 0.2
 # the default determinism seed and the filename suffix, so no call site can
 # silently keep 42. None (the default) leaves every original seed untouched.
 _REPEAT_SEED: int | None = None
+# Refit protocol (Addendum B.2): number of inner folds, 0 = off. Set once by a
+# runner through apply_cv_args; read by cv_suffix and the training loops.
+_REFIT_FOLDS: int = 0
 
 
 def set_repeat_seed(seed: int | None) -> None:
     global _REPEAT_SEED
     _REPEAT_SEED = seed
+
+
+def set_refit_folds(n: int) -> None:
+    global _REFIT_FOLDS
+    if n and n < 2:
+        raise ValueError(f"--refit-folds must be 0 or >= 2, got {n}")
+    _REFIT_FOLDS = int(n or 0)
+
+
+def refit_folds() -> int:
+    """Inner folds of the refit protocol, or 0 when it is not active."""
+    return _REFIT_FOLDS
+
+
+def protocol_name(inner_val: float) -> str:
+    """'refit', 'innersplit' or 'legacy' for the active settings."""
+    if _REFIT_FOLDS:
+        return "refit"
+    return "innersplit" if inner_val else "legacy"
 
 
 def current_seed(default: int = DEFAULT_SEED) -> int:
@@ -133,19 +159,37 @@ def add_cv_args(parser: argparse.ArgumentParser, default_splitter: str = "legacy
              "and the threshold (0 = legacy: select on the outer fold).",
     )
     parser.add_argument(
+        "--refit-folds", type=int, default=0, dest="refit_folds",
+        help="Refit protocol (analysis plan B.2): choose the epoch count and "
+             "threshold by this many inner folds, then refit on the whole outer "
+             "training fold. 0 = off. Excludes --inner-val.",
+    )
+    parser.add_argument(
         "--cv-seed", type=int, default=None, dest="cv_seed",
         help="Repeated-CV seed: outer split seed s, inner split seed s + fold, "
              "determinism seed s (default: the experiment's original seed, 42).",
     )
 
 
+def apply_cv_args(args: argparse.Namespace) -> None:
+    """Activate the repeated-CV seed and the refit protocol from parsed args."""
+    refit = int(getattr(args, "refit_folds", 0) or 0)
+    if refit and getattr(args, "inner_val", 0):
+        raise SystemExit("--refit-folds and --inner-val are alternative protocols; pass one")
+    set_repeat_seed(getattr(args, "cv_seed", None))
+    set_refit_folds(refit)
+
+
 def cv_suffix(splitter: str, inner_val: float, cv_seed: int | None = None) -> str:
     """Filename suffix for a CV protocol: empty for the legacy protocol (so its
-    files keep the archived names), otherwise e.g. ``_sp-multilabel_iv20``,
-    plus ``_s<seed>`` for an explicit repeated-CV seed."""
+    files keep the archived names), otherwise e.g. ``_sp-multilabel_iv20`` or,
+    under the refit protocol, ``_sp-multilabel_rf5``, plus ``_s<seed>`` for an
+    explicit repeated-CV seed."""
     if cv_seed is None:
         cv_seed = _REPEAT_SEED
     seed = "" if cv_seed is None else f"_s{cv_seed}"
+    if _REFIT_FOLDS:
+        return f"_sp-{splitter}_rf{_REFIT_FOLDS}{seed}"
     if splitter == "legacy" and inner_val == 0:
         return seed
     return f"_sp-{splitter}_iv{int(round(inner_val * 100))}{seed}"

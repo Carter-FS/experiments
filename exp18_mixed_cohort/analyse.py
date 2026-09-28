@@ -53,13 +53,8 @@ def auc_or_nan(y, p) -> float:
 
 def stratified_auc(df: pd.DataFrame) -> float:
     """P(seizure-free outranks non-seizure-free | same cohort)."""
-    num = den = 0.0
-    for _, g in df.groupby("cohort"):
-        n_pos, n_neg = int(g["y_true"].sum()), int((1 - g["y_true"]).sum())
-        if n_pos and n_neg:
-            num += auc_or_nan(g["y_true"], g["y_prob"]) * n_pos * n_neg
-            den += n_pos * n_neg
-    return num / den if den else np.nan
+    from shared.stats_util import cohort_stratified_auc
+    return cohort_stratified_auc(df["y_true"], df["y_prob"], df["cohort"])
 
 
 def calibration(y: np.ndarray, p: np.ndarray) -> dict:

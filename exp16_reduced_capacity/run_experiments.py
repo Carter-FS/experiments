@@ -17,7 +17,7 @@ import numpy as np
 import torch
 
 from shared.cv_splits import add_cv_args, current_seed, cv_suffix, fold_indices, outer_splits
-from shared.cv_splits import set_repeat_seed  # noqa: E402
+from shared.cv_splits import apply_cv_args  # noqa: E402
 from shared.prediction_logger import run_provenance
 
 from .config import ASM_NAME_MAPPING, CV_CONFIG, VARIANTS
@@ -174,7 +174,7 @@ def main():
     parser.add_argument("--device", type=str, default=None)
     add_cv_args(parser)
     args = parser.parse_args()
-    set_repeat_seed(args.cv_seed)  # repeated-CV seed; None keeps the original seeds
+    apply_cv_args(args)  # repeated-CV seed and refit protocol (plan B.2)
     if args.seed is None:
         args.seed = 42 if args.cv_seed is None else args.cv_seed
 

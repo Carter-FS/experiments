@@ -81,6 +81,14 @@ def run_provenance() -> dict:
     }
 
 
+def protocol_metadata(inner_val: float) -> dict:
+    """Selection protocol of the active run ('legacy' / 'innersplit' / 'refit'),
+    so consumers need not infer it from the filename."""
+    from shared.cv_splits import protocol_name, refit_folds
+
+    return {"protocol": protocol_name(inner_val), "refit_folds": refit_folds()}
+
+
 class PredictionLogger:
     """Accumulate per-fold OOF predictions and dump as JSON.
 
@@ -107,8 +115,12 @@ class PredictionLogger:
         y_true: Iterable,
         y_prob: Iterable,
         threshold: float | None = None,
+        selection: dict | None = None,
     ) -> None:
-        """Append one fold's held-out predictions to the accumulator."""
+        """Append one fold's held-out predictions to the accumulator.
+
+        ``selection`` (refit protocol) records how the epoch count and the
+        threshold were chosen: EpochChoice.as_metadata()."""
         pids_list = [str(p) for p in pids]
         y_true_list = [int(v) for v in y_true]
         y_prob_list = [float(v) for v in y_prob]
@@ -127,6 +139,8 @@ class PredictionLogger:
         }
         if threshold is not None:
             entry["threshold"] = float(threshold)
+        if selection is not None:
+            entry["selection"] = selection
         self.folds.append(entry)
 
     def save(self) -> Path:
@@ -136,7 +150,8 @@ class PredictionLogger:
             "exp_id": self.exp_id,
             "n_folds": len(self.folds),
             "folds": self.folds,
-            "metadata": {**self.metadata, "provenance": run_provenance()},
+            "metadata": {**protocol_metadata(self.metadata.get("inner_val", 0) or 0),
+                         **self.metadata, "provenance": run_provenance()},
         }
         with self.output_path.open("w") as handle:
             json.dump(payload, handle, indent=2)

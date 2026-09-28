@@ -19,7 +19,7 @@ from typing import List, Dict
 import numpy as np
 
 from shared.cv_splits import add_cv_args, cv_suffix
-from shared.cv_splits import set_repeat_seed  # noqa: E402
+from shared.cv_splits import apply_cv_args  # noqa: E402
 
 from .config import EXPERIMENTS, RESULTS_DIR
 from .data_pipeline import get_full_dataset, load_csv_data
@@ -245,7 +245,7 @@ def main():
 
     args = parser.parse_args()
 
-    set_repeat_seed(args.cv_seed)  # repeated-CV seed; None keeps the original seeds
+    apply_cv_args(args)  # repeated-CV seed and refit protocol (plan B.2)
 
     if args.deterministic:
         from shared.determinism import enable_determinism

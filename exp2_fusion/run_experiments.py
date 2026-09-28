@@ -13,7 +13,7 @@ import torch
 from .config import EXPERIMENTS, OUTPUTS_DIR, SMILES_EMBED_DIMS
 from .utils.logging_utils import setup_logging, log_environment_info, log_exception
 from shared.cv_splits import add_cv_args, cv_suffix
-from shared.cv_splits import set_repeat_seed  # noqa: E402
+from shared.cv_splits import apply_cv_args  # noqa: E402
 
 # Set up module logger (will be configured in main)
 logger = logging.getLogger("exp2")
@@ -241,7 +241,7 @@ def main():
 
     args = parser.parse_args()
 
-    set_repeat_seed(args.cv_seed)  # repeated-CV seed; None keeps the original seeds
+    apply_cv_args(args)  # repeated-CV seed and refit protocol (plan B.2)
 
     if args.deterministic:
         from shared.determinism import enable_determinism

@@ -14,7 +14,8 @@ from .config import CONFIG_4A, CONFIG_4B, CV_CONFIG
 from .data_pipeline import ClinicalDataset, create_datasets, load_clinical_data
 from .models import get_model
 from shared.asm_balancing import WeightedASMDataset, compute_asm_sample_weights, weighted_cross_entropy
-from shared.cv_splits import fold_indices, outer_splits, rethreshold
+from shared.cv_splits import outer_splits, rethreshold
+from shared.epoch_selection import run_outer_fold
 
 logger = logging.getLogger("exp4")
 
@@ -160,8 +161,16 @@ def train_fold(
     fold: int,
     asm_balance_mode: str = "none",
     test_dataset: Optional[ClinicalDataset] = None,
+    trace: Optional[dict] = None,
+    fixed_epochs: Optional[int] = None,
+    refit_choice=None,
 ) -> Dict[str, float]:
     """Train and evaluate a single fold.
+
+    Refit protocol (analysis plan B.2): an inner run passes ``trace`` to
+    collect the early-stopping set's probabilities after every epoch; the
+    refit passes ``fixed_epochs`` (no early-stopping set) and gets the outer
+    test metrics of the final weights, unthresholded.
 
     Args:
         train_dataset: Training dataset.
@@ -195,7 +204,7 @@ def train_fold(
         drop_last=False,
         num_workers=0,
     )
-    val_loader = DataLoader(
+    val_loader = None if val_dataset is None else DataLoader(
         val_dataset,
         batch_size=config["batch_size"],
         shuffle=False,
@@ -230,9 +239,13 @@ def train_fold(
     best_state = None
     patience_counter = 0
 
-    for epoch in range(config["epochs"]):
+    for epoch in range(config["epochs"] if fixed_epochs is None else fixed_epochs):
         train_loss = train_epoch(model, train_loader, optimizer, criterion, device, asm_weighted=asm_weighted)
+        if fixed_epochs is not None:
+            continue
         val_loss, val_metrics = evaluate(model, val_loader, criterion, device)
+        if trace is not None:
+            trace.setdefault("val_probs", []).append(np.asarray(val_metrics["y_prob"], dtype=float))
 
         if val_metrics["auc"] > best_val_auc:
             best_val_auc = val_metrics["auc"]
@@ -252,6 +265,12 @@ def train_fold(
         if patience_counter >= config["patience"]:
             logger.info(f"    Early stopping at epoch {epoch + 1}")
             break
+
+    if fixed_epochs is not None:
+        test_loader = DataLoader(
+            test_dataset, batch_size=config["batch_size"], shuffle=False, drop_last=False, num_workers=0,
+        )
+        return evaluate(model, test_loader, criterion, device)[1]
 
     if test_dataset is None:
         return best_metrics
@@ -315,20 +334,14 @@ def run_cross_validation(
     for fold, (train_idx, val_idx) in enumerate(splits):
         logger.info(f"Fold {fold + 1}/{CV_CONFIG['n_splits']}")
 
-        # Create datasets (preprocessor fit on the fit set only). Clean runs
-        # early-stop on an inner split and score the outer fold separately.
-        fit_idx, es_idx, test_idx = fold_indices(outcomes, train_idx, val_idx, fold, inner_val)
-        train_ds, val_ds, _ = create_datasets(df, fit_idx, es_idx)
-        test_ds = create_datasets(df, fit_idx, test_idx)[1] if test_idx is not None else None
-        logger.info(
-            f"  Train: {len(train_ds)}, Early-stop: {len(val_ds)}"
-            + (f", Test: {len(test_ds)}" if test_ds is not None else "")
-        )
-
-        # Train fold
-        metrics = train_fold(
-            train_ds, val_ds, model_type, device, fold,
-            asm_balance_mode=asm_balance_mode, test_dataset=test_ds,
+        # Preprocessor fit on the fit set only. Clean runs select on inner
+        # data (inner split, or inner folds + refit) and score the outer fold once.
+        metrics, selection = run_outer_fold(
+            outcomes, train_idx, val_idx, fold, inner_val,
+            make_datasets=lambda a, b: create_datasets(df, a, b)[:2],
+            train=lambda tr, va, **kw: train_fold(
+                tr, va, model_type, device, fold, asm_balance_mode=asm_balance_mode, **kw),
+            log=logger.info,
         )
 
         if prediction_logger is not None:
@@ -339,6 +352,7 @@ def run_cross_validation(
                 y_true=metrics["y_true"],
                 y_prob=metrics["y_prob"],
                 threshold=metrics.get("optimal_threshold"),
+                selection=selection,
             )
 
         for key in fold_metrics:

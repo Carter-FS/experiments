@@ -301,3 +301,22 @@ def meta_analysis_sj_robust(yi, vi, alpha=0.05):
         'H2': H2,
         'k': k
     }
+
+
+def cohort_stratified_auc(y_true, y_prob, cohorts) -> float:
+    """P(positive outranks negative | same cohort): the pair-weighted mean of the
+    within-cohort AUCs (weights n_pos * n_neg). Cross-cohort pairs never count,
+    so a model cannot score by separating cohorts with different base rates.
+    NaN when no cohort has both classes."""
+    from sklearn.metrics import roc_auc_score
+
+    y_true, y_prob, cohorts = np.asarray(y_true), np.asarray(y_prob), np.asarray(cohorts)
+    num = den = 0.0
+    for c in np.unique(cohorts):
+        m = cohorts == c
+        n_pos = int(y_true[m].sum())
+        n_neg = int(m.sum()) - n_pos
+        if n_pos and n_neg:
+            num += float(roc_auc_score(y_true[m], y_prob[m])) * n_pos * n_neg
+            den += n_pos * n_neg
+    return num / den if den else float("nan")

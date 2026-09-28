@@ -16,7 +16,8 @@ from .data_pipeline import (
     prepare_quad_modality_data,
 )
 from .models import get_model
-from shared.cv_splits import fold_indices, outer_splits, rethreshold, current_seed
+from shared.cv_splits import outer_splits, rethreshold, current_seed
+from shared.epoch_selection import run_outer_fold
 
 logger = logging.getLogger("exp7")
 
@@ -291,6 +292,9 @@ def train_fold(
     fold: int = 0,
     asm_balance_mode: str = "none",
     test_dataset=None,
+    trace=None,
+    fixed_epochs=None,
+    refit_choice=None,
 ) -> Dict[str, float]:
     """Train and evaluate a single fold.
 
@@ -345,7 +349,7 @@ def train_fold(
             drop_last=False,
             num_workers=0,
         )
-    val_loader = DataLoader(
+    val_loader = None if val_dataset is None else DataLoader(
         val_dataset,
         batch_size=config["batch_size"],
         shuffle=False,
@@ -399,7 +403,7 @@ def train_fold(
     patience_counter = 0
     global_step = 0
 
-    for epoch in range(config["epochs"]):
+    for epoch in range(config["epochs"] if fixed_epochs is None else fixed_epochs):
         if fusion == "moe":
             train_loss, global_step = train_fn(
                 model, train_loader, optimizer, criterion, device, global_step,
@@ -410,7 +414,11 @@ def train_fold(
                 model, train_loader, optimizer, criterion, device,
                 asm_weighted=asm_weighted, class_weights=class_weights,
             )
+        if fixed_epochs is not None:
+            continue
         val_loss, val_metrics = eval_fn(model, val_loader, criterion, device)
+        if trace is not None:
+            trace.setdefault("val_probs", []).append(np.asarray(val_metrics["y_prob"], dtype=float))
 
         if val_metrics["auc"] > best_val_auc:
             best_val_auc = val_metrics["auc"]
@@ -430,6 +438,14 @@ def train_fold(
         if patience_counter >= config["patience"]:
             logger.info(f"    Early stopping at epoch {epoch + 1}")
             break
+
+    if fixed_epochs is not None:
+        # Refit protocol: final weights after exactly fixed_epochs, unthresholded.
+        test_loader = DataLoader(
+            _DropPidWrapper(test_dataset), batch_size=config["batch_size"],
+            shuffle=False, drop_last=False, num_workers=0,
+        )
+        return eval_fn(model, test_loader, criterion, device)[1]
 
     if test_dataset is None:
         return best_metrics
@@ -486,31 +502,16 @@ def run_cross_validation(
     for fold, (train_idx, val_idx) in enumerate(splits):
         logger.info(f"Fold {fold + 1}/{CV_CONFIG['n_splits']}")
 
-        # Clinical preprocessor is fitted on the fit set only. Clean runs
-        # early-stop on an inner split and score the outer fold separately.
-        fit_idx, es_idx, test_idx = fold_indices(outcomes, train_idx, val_idx, fold, inner_val)
-        train_ds, val_ds, _ = create_quad_modality_datasets(
-            df, smiles_embeddings, smiles_indices, text_embeddings, eeg_data, fit_idx, es_idx
-        )
-        test_ds = None
-        if test_idx is not None:
-            test_ds = create_quad_modality_datasets(
-                df, smiles_embeddings, smiles_indices, text_embeddings, eeg_data, fit_idx, test_idx
-            )[1]
-        logger.info(
-            f"  Train: {len(train_ds)}, Early-stop: {len(val_ds)}"
-            + (f", Test: {len(test_ds)}" if test_ds is not None else "")
-        )
-
-        metrics = train_fold(
-            train_ds, val_ds,
-            fusion=fusion,
-            text_model=text_model,
-            smiles_model=smiles_model,
-            device=device,
-            fold=fold,
-            asm_balance_mode=asm_balance_mode,
-            test_dataset=test_ds,
+        # Clinical preprocessor is fitted on the fit set only. Clean runs select
+        # on inner data (inner split, or inner folds + refit) and score the outer fold once.
+        metrics, selection = run_outer_fold(
+            outcomes, train_idx, val_idx, fold, inner_val,
+            make_datasets=lambda a, b: create_quad_modality_datasets(
+                df, smiles_embeddings, smiles_indices, text_embeddings, eeg_data, a, b,
+            )[:2],
+            train=lambda tr, va, **kw: train_fold(
+                tr, va, fusion=fusion, text_model=text_model, smiles_model=smiles_model, device=device, fold=fold, asm_balance_mode=asm_balance_mode, **kw),
+            log=logger.info,
         )
 
         for key in fold_metrics:

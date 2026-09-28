@@ -16,7 +16,8 @@ from torch.utils.data import DataLoader
 # Add parent directory for exp8_stratification import
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from exp8_stratification.stratified_cv import get_multilabel_splits, get_outcome_only_splits
-from shared.cv_splits import fold_indices, outer_splits, rethreshold, current_seed
+from shared.cv_splits import outer_splits, rethreshold, current_seed
+from shared.epoch_selection import run_outer_fold
 
 from .config import CV_CONFIG, TRAINING_CONFIG
 from .data_pipeline import (
@@ -324,6 +325,9 @@ def train_fold(
     fold: int = 0,
     asm_balance_mode: str = "none",
     test_dataset=None,
+    trace=None,
+    fixed_epochs=None,
+    refit_choice=None,
 ) -> Dict[str, float]:
     """Train and evaluate a single fold.
 
@@ -377,7 +381,7 @@ def train_fold(
             drop_last=False,
             num_workers=0,
         )
-    val_loader = DataLoader(
+    val_loader = None if val_dataset is None else DataLoader(
         val_dataset,
         batch_size=config["batch_size"],
         shuffle=False,
@@ -435,12 +439,16 @@ def train_fold(
     best_state = None
     patience_counter = 0
 
-    for epoch in range(config["epochs"]):
+    for epoch in range(config["epochs"] if fixed_epochs is None else fixed_epochs):
         train_loss = train_fn(
             model, train_loader, optimizer, criterion, device,
             asm_weighted=asm_weighted, class_weights=class_weights,
         )
+        if fixed_epochs is not None:
+            continue
         val_loss, val_metrics = eval_fn(model, val_loader, criterion, device)
+        if trace is not None:
+            trace.setdefault("val_probs", []).append(np.asarray(val_metrics["y_prob"], dtype=float))
 
         if val_metrics["auc"] > best_val_auc:
             best_val_auc = val_metrics["auc"]
@@ -460,6 +468,13 @@ def train_fold(
         if patience_counter >= config["patience"]:
             logger.info(f"    Early stopping at epoch {epoch + 1}")
             break
+
+    if fixed_epochs is not None:
+        # Refit protocol: final weights after exactly fixed_epochs, unthresholded.
+        test_loader = DataLoader(
+            test_dataset, batch_size=config["batch_size"], shuffle=False, drop_last=False, num_workers=0,
+        )
+        return eval_fn(model, test_loader, criterion, device)[1]
 
     if test_dataset is None:
         return best_metrics
@@ -552,30 +567,16 @@ def run_cross_validation_smiles(
     for fold, (train_idx, val_idx) in enumerate(splits):
         logger.info(f"Fold {fold + 1}/{CV_CONFIG['n_splits']}")
 
-        # Preprocessor fit on the fit set only. Clean runs early-stop on an
-        # inner split and score the outer fold separately.
-        fit_idx, es_idx, test_idx = fold_indices(outcomes, train_idx, val_idx, fold, inner_val)
-        train_ds, val_ds, _ = create_clinical_smiles_datasets(
-            df, smiles_embeddings, smiles_indices, fit_idx, es_idx
-        )
-        test_ds = None
-        if test_idx is not None:
-            test_ds = create_clinical_smiles_datasets(
-                df, smiles_embeddings, smiles_indices, fit_idx, test_idx
-            )[1]
-        logger.info(
-            f"  Train: {len(train_ds)}, Early-stop: {len(val_ds)}"
-            + (f", Test: {len(test_ds)}" if test_ds is not None else "")
-        )
-
-        metrics = train_fold(
-            train_ds, val_ds,
-            modality="smiles",
-            smiles_model=smiles_model,
-            device=device,
-            fold=fold,
-            asm_balance_mode=asm_balance_mode,
-            test_dataset=test_ds,
+        # Preprocessor fit on the fit set only. Clean runs select on
+        # inner data (inner split, or inner folds + refit) and score the outer fold once.
+        metrics, selection = run_outer_fold(
+            outcomes, train_idx, val_idx, fold, inner_val,
+            make_datasets=lambda a, b: create_clinical_smiles_datasets(
+                df, smiles_embeddings, smiles_indices, a, b,
+            )[:2],
+            train=lambda tr, va, **kw: train_fold(
+                tr, va, modality="smiles", smiles_model=smiles_model, device=device, fold=fold, asm_balance_mode=asm_balance_mode, **kw),
+            log=logger.info,
         )
 
         if prediction_logger is not None and "y_prob" in metrics:
@@ -586,6 +587,7 @@ def run_cross_validation_smiles(
                 y_true=metrics["y_true"],
                 y_prob=metrics["y_prob"],
                 threshold=metrics.get("optimal_threshold"),
+                selection=selection,
             )
 
         for key in fold_metrics:
@@ -646,30 +648,16 @@ def run_cross_validation_text(
     for fold, (train_idx, val_idx) in enumerate(splits):
         logger.info(f"Fold {fold + 1}/{CV_CONFIG['n_splits']}")
 
-        # Preprocessor fit on the fit set only. Clean runs early-stop on an
-        # inner split and score the outer fold separately.
-        fit_idx, es_idx, test_idx = fold_indices(outcomes, train_idx, val_idx, fold, inner_val)
-        train_ds, val_ds, _ = create_clinical_text_datasets(
-            df, text_embeddings, fit_idx, es_idx
-        )
-        test_ds = None
-        if test_idx is not None:
-            test_ds = create_clinical_text_datasets(
-                df, text_embeddings, fit_idx, test_idx
-            )[1]
-        logger.info(
-            f"  Train: {len(train_ds)}, Early-stop: {len(val_ds)}"
-            + (f", Test: {len(test_ds)}" if test_ds is not None else "")
-        )
-
-        metrics = train_fold(
-            train_ds, val_ds,
-            modality="text",
-            text_model=text_model,
-            device=device,
-            fold=fold,
-            asm_balance_mode=asm_balance_mode,
-            test_dataset=test_ds,
+        # Preprocessor fit on the fit set only. Clean runs select on
+        # inner data (inner split, or inner folds + refit) and score the outer fold once.
+        metrics, selection = run_outer_fold(
+            outcomes, train_idx, val_idx, fold, inner_val,
+            make_datasets=lambda a, b: create_clinical_text_datasets(
+                df, text_embeddings, a, b,
+            )[:2],
+            train=lambda tr, va, **kw: train_fold(
+                tr, va, modality="text", text_model=text_model, device=device, fold=fold, asm_balance_mode=asm_balance_mode, **kw),
+            log=logger.info,
         )
 
         if prediction_logger is not None and "y_prob" in metrics:
@@ -680,6 +668,7 @@ def run_cross_validation_text(
                 y_true=metrics["y_true"],
                 y_prob=metrics["y_prob"],
                 threshold=metrics.get("optimal_threshold"),
+                selection=selection,
             )
 
         for key in fold_metrics:
@@ -740,30 +729,16 @@ def run_cross_validation_eeg(
     for fold, (train_idx, val_idx) in enumerate(splits):
         logger.info(f"Fold {fold + 1}/{CV_CONFIG['n_splits']}")
 
-        # Preprocessor fit on the fit set only. Clean runs early-stop on an
-        # inner split and score the outer fold separately.
-        fit_idx, es_idx, test_idx = fold_indices(outcomes, train_idx, val_idx, fold, inner_val)
-        train_ds, val_ds, _ = create_clinical_eeg_datasets(
-            df, eeg_data, fit_idx, es_idx
-        )
-        test_ds = None
-        if test_idx is not None:
-            test_ds = create_clinical_eeg_datasets(
-                df, eeg_data, fit_idx, test_idx
-            )[1]
-        logger.info(
-            f"  Train: {len(train_ds)}, Early-stop: {len(val_ds)}"
-            + (f", Test: {len(test_ds)}" if test_ds is not None else "")
-        )
-
-        metrics = train_fold(
-            train_ds, val_ds,
-            modality="eeg",
-            eeg_model=eeg_model,
-            device=device,
-            fold=fold,
-            asm_balance_mode=asm_balance_mode,
-            test_dataset=test_ds,
+        # Preprocessor fit on the fit set only. Clean runs select on
+        # inner data (inner split, or inner folds + refit) and score the outer fold once.
+        metrics, selection = run_outer_fold(
+            outcomes, train_idx, val_idx, fold, inner_val,
+            make_datasets=lambda a, b: create_clinical_eeg_datasets(
+                df, eeg_data, a, b,
+            )[:2],
+            train=lambda tr, va, **kw: train_fold(
+                tr, va, modality="eeg", eeg_model=eeg_model, device=device, fold=fold, asm_balance_mode=asm_balance_mode, **kw),
+            log=logger.info,
         )
 
         if prediction_logger is not None and "y_prob" in metrics:
@@ -774,6 +749,7 @@ def run_cross_validation_eeg(
                 y_true=metrics["y_true"],
                 y_prob=metrics["y_prob"],
                 threshold=metrics.get("optimal_threshold"),
+                selection=selection,
             )
 
         for key in fold_metrics:
