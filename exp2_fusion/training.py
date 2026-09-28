@@ -21,7 +21,8 @@ from .config import BATCH_SIZE_BY_ENCODER, CHUNK_SIZE_BY_ENCODER, EMBED_DIM_BY_E
 from .data_pipeline import EEGSMILESDataset, create_datasets, get_max_channels, prepare_data
 from .eeg_pipeline import add_stratification_columns
 from shared.asm_balancing import WeightedASMDataset, compute_asm_sample_weights, weighted_cross_entropy
-from shared.cv_splits import fold_indices, outer_splits, rethreshold, current_seed
+from shared.cv_splits import outer_splits, rethreshold, current_seed
+from shared.epoch_selection import run_outer_fold
 from .models.fusion import get_fusion_model
 
 logger = logging.getLogger("exp2")
@@ -190,8 +191,18 @@ def train_fold(
     model_config: Dict = MODEL_CONFIG,
     asm_balance_mode: str = "none",
     test_dataset: Optional[EEGSMILESDataset] = None,
+    trace: Optional[dict] = None,
+    fixed_epochs: Optional[int] = None,
+    refit_choice=None,
 ) -> Tuple[Dict[str, float], nn.Module]:
     """Train model for one fold.
+
+    Refit protocol (analysis plan B.2): an inner run passes ``trace`` to
+    collect the early-stopping set's probabilities and the learning rate per
+    epoch. The refit passes ``fixed_epochs`` and ``val_dataset=None``; it
+    replays the inner runs' median learning rate per epoch
+    (``refit_choice.lr_schedule``) in place of ReduceLROnPlateau and returns the
+    outer test metrics of the final weights, unthresholded.
 
     Args:
         train_dataset: Training dataset.
@@ -226,7 +237,7 @@ def train_fold(
         num_workers=0,
         pin_memory=True,
     )
-    val_loader = DataLoader(
+    val_loader = None if val_dataset is None else DataLoader(
         val_dataset,
         batch_size=config["batch_size"],
         shuffle=False,
@@ -290,9 +301,18 @@ def train_fold(
     patience_counter = 0
     global_step = 0
 
-    for epoch in range(config["epochs"]):
+    for epoch in range(config["epochs"] if fixed_epochs is None else fixed_epochs):
+        if fixed_epochs is not None and refit_choice is not None and refit_choice.lr_schedule:
+            for group in optimizer.param_groups:
+                group["lr"] = refit_choice.lr_schedule[epoch]
+        if trace is not None:
+            trace.setdefault("lr", []).append(optimizer.param_groups[0]["lr"])
         train_loss, global_step = train_epoch(model, train_loader, optimizer, criterion, device, is_moe, global_step, asm_weighted=asm_weighted)
+        if fixed_epochs is not None:
+            continue
         val_loss, val_metrics = evaluate(model, val_loader, criterion, device, is_moe)
+        if trace is not None:
+            trace.setdefault("val_probs", []).append(np.asarray(val_metrics["y_prob"], dtype=float))
 
         scheduler.step(val_metrics["auc"])
 
@@ -316,6 +336,12 @@ def train_fold(
         if patience_counter >= config["patience"]:
             logger.debug(f"Early stopping at epoch {epoch+1} (patience={config['patience']})")
             break
+
+    if fixed_epochs is not None:
+        test_loader = DataLoader(
+            test_dataset, batch_size=config["batch_size"], shuffle=False, num_workers=0, pin_memory=True,
+        )
+        return evaluate(model, test_loader, criterion, device, is_moe)[1], model
 
     if test_dataset is None:
         return best_metrics, model
@@ -427,39 +453,32 @@ def run_cross_validation(
     outcomes = df["outcome"].values
 
     for fold, (train_idx, val_idx) in enumerate(splits):
-        # Clean runs early-stop on an inner split and score the outer fold
-        # separately; legacy runs early-stop on the outer fold itself.
-        fit_idx, es_idx, test_idx = fold_indices(outcomes, train_idx, val_idx, fold, inner_val)
         if verbose:
-            logger.info(
-                f"  Fold {fold + 1}/{config['n_folds']} (train={len(fit_idx)}, early-stop={len(es_idx)}"
-                + (f", test={len(test_idx)})" if test_idx is not None else ")")
-            )
+            logger.info(f"  Fold {fold + 1}/{config['n_folds']}")
 
-        # Create datasets (pass max_channels for consistent padding)
-        train_ds, val_ds = create_datasets(
-            eeg_data, smiles_embeddings, smiles_indices, df,
-            fit_idx, es_idx,
-            max_channels=n_eeg_channels,
-        )
-        test_ds = create_datasets(
-            eeg_data, smiles_embeddings, smiles_indices, df,
-            fit_idx, test_idx,
-            max_channels=n_eeg_channels,
-        )[1] if test_idx is not None else None
-
-        # Train
+        # Clean runs select (early stopping, LR scheduling, threshold) on inner
+        # data of the outer training fold and score the outer fold once;
+        # legacy runs early-stop on the outer fold itself.
         try:
-            metrics, _ = train_fold(
-                train_ds, val_ds,
-                fusion_type=fusion_type,
-                eeg_encoder_type=eeg_encoder_type,
-                smiles_embed_dim=smiles_embed_dim,
-                n_eeg_channels=n_eeg_channels,
-                device=device,
-                config=config,
-                asm_balance_mode=asm_balance_mode,
-                test_dataset=test_ds,
+            metrics, selection = run_outer_fold(
+                outcomes, train_idx, val_idx, fold, inner_val,
+                # Pass max_channels for consistent padding.
+                make_datasets=lambda a, b: create_datasets(
+                    eeg_data, smiles_embeddings, smiles_indices, df, a, b,
+                    max_channels=n_eeg_channels,
+                ),
+                train=lambda tr, va, **kw: train_fold(
+                    tr, va,
+                    fusion_type=fusion_type,
+                    eeg_encoder_type=eeg_encoder_type,
+                    smiles_embed_dim=smiles_embed_dim,
+                    n_eeg_channels=n_eeg_channels,
+                    device=device,
+                    config=config,
+                    asm_balance_mode=asm_balance_mode,
+                    **kw,
+                )[0],
+                log=logger.info if verbose else None,
             )
 
             for key in fold_metrics:
@@ -473,6 +492,7 @@ def run_cross_validation(
                     y_true=metrics["y_true"],
                     y_prob=metrics["y_prob"],
                     threshold=metrics.get("optimal_threshold"),
+                    selection=selection,
                 )
 
             if verbose:

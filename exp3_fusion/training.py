@@ -19,7 +19,8 @@ from .data_pipeline import (
 )
 from .models import TripleModalityMLP, TripleModalityFuseMoE
 from exp2_fusion.eeg_pipeline import add_stratification_columns
-from shared.cv_splits import fold_indices, outer_splits, rethreshold, current_seed
+from shared.cv_splits import outer_splits, rethreshold, current_seed
+from shared.epoch_selection import run_outer_fold
 
 logger = logging.getLogger("exp3")
 
@@ -230,6 +231,9 @@ def train_fold(
     fold: int,
     asm_balance_mode: str = "none",
     test_dataset: Optional[TripleModalityDataset] = None,
+    trace=None,
+    fixed_epochs=None,
+    refit_choice=None,
     eeg_encoder_type: Optional[str] = None,
 ) -> Dict[str, float]:
     """Train and evaluate a single fold.
@@ -280,7 +284,7 @@ def train_fold(
             drop_last=False,
             num_workers=0,
         )
-    val_loader = DataLoader(
+    val_loader = None if val_dataset is None else DataLoader(
         val_dataset,
         batch_size=config["batch_size"],
         shuffle=False,
@@ -313,6 +317,17 @@ def train_fold(
     )
     criterion = nn.CrossEntropyLoss(weight=class_weights)
 
+    # Refit protocol: FuseMoE anneals its gating temperature per optimiser
+    # step, and the refit takes more steps per epoch than the inner runs, so
+    # rescale its step count to the inner runs' (analysis plan B.2).
+    if trace is not None:
+        trace["steps_per_epoch"] = len(train_loader)
+    if (fixed_epochs is not None and refit_choice is not None and refit_choice.steps_per_epoch
+            and hasattr(model, "update_temperature")):
+        scale = refit_choice.steps_per_epoch / len(train_loader)
+        update = model.update_temperature
+        model.update_temperature = lambda step: update(int(step * scale))
+
     # Training loop
     best_val_auc = 0.0
     best_metrics = {}
@@ -321,12 +336,16 @@ def train_fold(
     patience_counter = 0
     global_step = 0
 
-    for epoch in range(config["epochs"]):
+    for epoch in range(config["epochs"] if fixed_epochs is None else fixed_epochs):
         train_loss, global_step = train_epoch(
             model, train_loader, optimizer, criterion, device, is_moe, global_step,
             asm_weighted=asm_weighted, class_weights=class_weights,
         )
+        if fixed_epochs is not None:
+            continue
         val_loss, val_metrics = evaluate(model, val_loader, criterion, device, is_moe)
+        if trace is not None:
+            trace.setdefault("val_probs", []).append(np.asarray(val_metrics["y_prob"], dtype=float))
 
         if val_metrics["auc"] > best_val_auc:
             best_val_auc = val_metrics["auc"]
@@ -347,6 +366,13 @@ def train_fold(
         if patience_counter >= config["patience"]:
             logger.info(f"    Early stopping at epoch {epoch + 1}")
             break
+
+    if fixed_epochs is not None:
+        # Refit protocol: final weights after exactly fixed_epochs, unthresholded.
+        test_loader = DataLoader(
+            test_dataset, batch_size=config["batch_size"], shuffle=False, drop_last=False, num_workers=0,
+        )
+        return evaluate(model, test_loader, criterion, device, is_moe)[1]
 
     if test_dataset is None:
         return best_metrics
@@ -424,27 +450,18 @@ def run_cross_validation(
     for fold, (train_idx, val_idx) in enumerate(splits):
         logger.info(f"Fold {fold + 1}/{CV_CONFIG['n_splits']}")
 
-        # Create datasets. Clean runs early-stop on an inner split and score
-        # the outer fold separately.
-        fit_idx, es_idx, test_idx = fold_indices(outcomes, train_idx, val_idx, fold, inner_val)
-        train_ds, val_ds = create_datasets(
-            text_emb, eeg_data, smiles_emb, smiles_idx, df,
-            fit_idx, es_idx, max_channels,
-        )
-        test_ds = create_datasets(
-            text_emb, eeg_data, smiles_emb, smiles_idx, df,
-            fit_idx, test_idx, max_channels,
-        )[1] if test_idx is not None else None
-        logger.info(
-            f"  Train: {len(train_ds)}, Early-stop: {len(val_ds)}"
-            + (f", Test: {len(test_ds)}" if test_ds is not None else "")
-        )
-
-        # Train fold
-        metrics = train_fold(
-            train_ds, val_ds, fusion_type, text_dim, smiles_dim, device, fold,
-            asm_balance_mode=asm_balance_mode, test_dataset=test_ds,
-            eeg_encoder_type=eeg_encoder_type,
+        # Create datasets. Clean runs select on inner data (inner split, or
+        # inner folds + refit) and score the outer fold once.
+        metrics, selection = run_outer_fold(
+            outcomes, train_idx, val_idx, fold, inner_val,
+            make_datasets=lambda a, b: create_datasets(
+                text_emb, eeg_data, smiles_emb, smiles_idx, df, a, b, max_channels,
+            ),
+            train=lambda tr, va, **kw: train_fold(
+                tr, va, fusion_type, text_dim, smiles_dim, device, fold,
+                asm_balance_mode=asm_balance_mode, eeg_encoder_type=eeg_encoder_type, **kw,
+            ),
+            log=logger.info,
         )
 
         if prediction_logger is not None and "y_prob" in metrics:
@@ -455,6 +472,7 @@ def run_cross_validation(
                 y_true=metrics["y_true"],
                 y_prob=metrics["y_prob"],
                 threshold=metrics.get("optimal_threshold"),
+                selection=selection,
             )
 
         for key in fold_metrics:

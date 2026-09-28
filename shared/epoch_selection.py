@@ -195,9 +195,11 @@ def run_outer_fold(strat_labels, train_idx, test_idx, fold: int, inner_val: floa
         if log:
             log(f"  Refit on {len(train_ds)} for {choice.epoch} epochs "
                 f"(inner best {choice.inner_best}), test {len(test_ds)}")
-        kw = {"refit_choice": choice} if (choice.lr_schedule or choice.steps_per_epoch) else {}
-        metrics = train(train_ds, None, test_dataset=test_ds, fixed_epochs=choice.epoch, **kw)
-        return rethreshold(metrics, choice.threshold)
+        result = train(train_ds, None, test_dataset=test_ds, fixed_epochs=choice.epoch, refit_choice=choice)
+        if "y_prob" not in result and "metrics" in result:
+            # train_fold_with_predictions-style result: the metrics are nested.
+            return {**result, "metrics": rethreshold(result["metrics"], choice.threshold)}
+        return rethreshold(result, choice.threshold)
 
     choice, metrics = refit_protocol(y, strat_labels, train_idx, fold, run_inner, run_refit,
                                      cohorts=cohorts, n_inner=refit_folds())

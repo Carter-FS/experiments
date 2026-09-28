@@ -17,9 +17,10 @@ from typing import Dict, List, Optional
 import numpy as np
 import torch
 
-from shared.cv_splits import add_cv_args, current_seed, cv_suffix, fold_indices, outer_splits
+from shared.cv_splits import add_cv_args, current_seed, cv_suffix, outer_splits, refit_folds, rethreshold
+from shared.epoch_selection import refit_protocol, run_outer_fold
 from shared.cv_splits import apply_cv_args  # noqa: E402
-from shared.prediction_logger import run_provenance
+from shared.prediction_logger import protocol_metadata, run_provenance
 
 from .config import ASM_NAME_MAPPING, CV_CONFIG, EXPERIMENTS, RESULTS_DIR
 from .data_pipeline import create_quad_modality_datasets, prepare_quad_modality_data
@@ -74,7 +75,8 @@ def run_experiment(
         "config": exp_config,
         "fold_metrics": fold_metrics,
         "summary": summary,
-        "metadata": {"splitter": splitter, "inner_val": inner_val, "asm_balance": asm_balance_mode},
+        "metadata": {**protocol_metadata(inner_val), "splitter": splitter, "inner_val": inner_val,
+                     "asm_balance": asm_balance_mode},
     }
 
 
@@ -302,47 +304,20 @@ def run_exp7a_with_predictions(
     folds_payload: List[Dict] = []
     for fold, (train_idx, val_idx) in enumerate(splits):
         logger.info(f"Fold {fold + 1}/{CV_CONFIG['n_splits']}")
-        # Clinical preprocessor is fitted on the fit set only. Clean runs
-        # early-stop on an inner split and predict the outer fold separately.
-        fit_idx, es_idx, test_idx = fold_indices(outcomes, train_idx, val_idx, fold, inner_val)
-        train_ds, val_ds, _ = create_quad_modality_datasets(
-            df,
-            smiles_embeddings,
-            smiles_indices,
-            text_embeddings,
-            eeg_data,
-            fit_idx,
-            es_idx,
-            return_pid=True,
-        )
-        test_ds = None
-        if test_idx is not None:
-            test_ds = create_quad_modality_datasets(
-                df,
-                smiles_embeddings,
-                smiles_indices,
-                text_embeddings,
-                eeg_data,
-                fit_idx,
-                test_idx,
+        # Clinical preprocessor is fitted on the fit set only. Clean runs select
+        # on inner data (inner split, or inner folds + refit) and predict the outer fold once.
+        result, selection = run_outer_fold(
+            outcomes, train_idx, val_idx, fold, inner_val,
+            make_datasets=lambda a, b: create_quad_modality_datasets(
+                df, smiles_embeddings, smiles_indices, text_embeddings, eeg_data, a, b,
                 return_pid=True,
-            )[1]
-        logger.info(
-            f"  Train: {len(train_ds)}, Early-stop: {len(val_ds)}"
-            + (f", Test: {len(test_ds)}" if test_ds is not None else "")
-        )
-
-        result = train_fold_with_predictions(
-            train_ds,
-            val_ds,
-            fusion=fusion,
-            text_model=text_model,
-            smiles_model=smiles_model,
-            device=device,
-            fold=fold,
-            candidate_smiles=candidate_smiles,
-            asm_balance_mode=asm_balance_mode,
-            test_dataset=test_ds,
+            )[:2],
+            train=lambda tr, va, **kw: train_fold_with_predictions(
+                tr, va, fusion=fusion, text_model=text_model, smiles_model=smiles_model,
+                device=device, fold=fold, candidate_smiles=candidate_smiles,
+                asm_balance_mode=asm_balance_mode, **kw,
+            ),
+            log=logger.info,
         )
 
         # Skip non-scalar metric entries (y_prob, y_true added in Stage A).
@@ -357,6 +332,7 @@ def run_exp7a_with_predictions(
             "y_true": result["val_y_true"],
             "y_prob": result["val_y_prob"],
             "y_prob_per_asm": {a: result["val_y_prob_per_asm"].get(a, []) for a in asms_used},
+            **({"selection": selection} if selection else {}),
         })
         logger.info(
             f"  Fold {fold + 1}: AUC={result['metrics'].get('auc', float('nan')):.4f}, "
@@ -369,6 +345,7 @@ def run_exp7a_with_predictions(
     # the legacy protocol so archived filenames are unchanged.
     suffix_part = (f"_{output_suffix}" if output_suffix else "") + cv_suffix(splitter, inner_val)
     metadata = {
+        **protocol_metadata(inner_val),
         "splitter": splitter,
         "inner_val": inner_val,
         "asm_balance": asm_balance_mode,
@@ -391,89 +368,132 @@ def run_exp7a_with_predictions(
     # ------------------------------------------------------------------
     # Final all-data refit with 10% random early-stop split.
     # ------------------------------------------------------------------
-    logger.info("Final all-data refit (90/10 random split for early stopping)")
-    rng = np.random.RandomState(current_seed(CV_CONFIG["random_state"]))
     n = len(df)
-    perm = rng.permutation(n)
-    n_val = max(1, int(round(0.1 * n)))
-    val_idx_full = perm[:n_val]
-    train_idx_full = perm[n_val:]
+    all_selection = None
+    if refit_folds():
+        # Refit protocol (analysis plan B.2): the epoch count and threshold come
+        # from inner folds over every patient, then one model is trained on
+        # all of them and predicts the full cohort (in sample, as before).
+        logger.info("Final all-data refit (inner-fold epoch selection over every patient)")
+        all_idx = np.arange(n)
 
-    train_ds_full, val_ds_full, _ = create_quad_modality_datasets(
-        df,
-        smiles_embeddings,
-        smiles_indices,
-        text_embeddings,
-        eeg_data,
-        train_idx_full,
-        val_idx_full,
-        return_pid=True,
-    )
-    logger.info(f"  Refit train: {len(train_ds_full)}, early-stop val: {len(val_ds_full)}")
+        def make_all(a, b):
+            return create_quad_modality_datasets(
+                df, smiles_embeddings, smiles_indices, text_embeddings, eeg_data, a, b,
+                return_pid=True,
+            )[:2]
 
-    refit_result = train_fold_with_predictions(
-        train_ds_full,
-        val_ds_full,
-        fusion=fusion,
-        text_model=text_model,
-        smiles_model=smiles_model,
-        device=device,
-        fold=-1,
-        candidate_smiles=candidate_smiles,
-        asm_balance_mode=asm_balance_mode,
-    )
+        def train_all(tr, va, **kw):
+            return train_fold_with_predictions(
+                tr, va, fusion=fusion, text_model=text_model, smiles_model=smiles_model,
+                device=device, fold=-1, candidate_smiles=candidate_smiles,
+                asm_balance_mode=asm_balance_mode, **kw,
+            )
 
-    # Predict on the FULL cohort using the refit model. Build a "val
-    # dataset" that contains every patient by passing all indices as the
-    # val split.
-    logger.info("Predicting on full cohort with refit model")
-    all_idx = np.arange(n)
-    # The training preprocessor in create_quad_modality_datasets is fitted
-    # on the train split and applied to the val split. To avoid refitting
-    # on different data, we re-build using the same train indices used
-    # above so the preprocessor is identical, but with val_idx = all
-    # indices.
-    train_ds_for_pp, full_eval_ds, _ = create_quad_modality_datasets(
-        df,
-        smiles_embeddings,
-        smiles_indices,
-        text_embeddings,
-        eeg_data,
-        train_idx_full,
-        all_idx,
-        return_pid=True,
-    )
-    del train_ds_for_pp
+        def run_inner(fit, val):
+            trace: Dict = {}
+            train_all(*make_all(fit, val), trace=trace)
+            return trace
 
-    # Inference on full cohort using the model we just trained (load best
-    # weights manually from refit_result and run predictions).
-    from torch.utils.data import DataLoader as _DL
-    from .models import get_model as _get_model
-    from .training import _predict_with_smiles_override
-    from .config import MLP_CONFIG as _MLP_CONFIG
+        def run_refit(full, choice):
+            train_ds_full, full_eval_ds = make_all(full, full)
+            return train_all(train_ds_full, None, test_dataset=full_eval_ds,
+                             fixed_epochs=choice.epoch, refit_choice=choice)
 
-    model_full = _get_model(fusion=fusion, text_model=text_model, smiles_model=smiles_model, device=device)
-    if refit_result["model_state_dict"] is not None:
-        model_full.load_state_dict(refit_result["model_state_dict"])
-
-    full_loader = _DL(
-        full_eval_ds,
-        batch_size=_MLP_CONFIG["batch_size"],
-        shuffle=False,
-        drop_last=False,
-        num_workers=0,
-    )
-
-    pids_full, y_true_full, y_prob_full = _predict_with_smiles_override(
-        model_full, full_loader, device, fusion=fusion, smiles_override=None
-    )
-    y_prob_per_asm_full: Dict[str, List[float]] = {}
-    for asm_name, smiles_vec in candidate_smiles.items():
-        override = torch.from_numpy(np.asarray(smiles_vec, dtype=np.float32))
-        _, _, probs = _predict_with_smiles_override(
-            model_full, full_loader, device, fusion=fusion, smiles_override=override
+        choice, refit_result = refit_protocol(
+            outcomes, outcomes, all_idx, -1, run_inner, run_refit, n_inner=refit_folds(),
         )
-        y_prob_per_asm_full[asm_name] = probs
+        refit_result["metrics"] = rethreshold(refit_result["metrics"], choice.threshold)
+        all_selection = choice.as_metadata()
+        pids_full = refit_result["val_pids"]
+        y_true_full = refit_result["val_y_true"]
+        y_prob_full = refit_result["val_y_prob"]
+        y_prob_per_asm_full = refit_result["val_y_prob_per_asm"]
+        early_stop_frac = None
+    else:
+        logger.info("Final all-data refit (90/10 random split for early stopping)")
+        rng = np.random.RandomState(current_seed(CV_CONFIG["random_state"]))
+        perm = rng.permutation(n)
+        n_val = max(1, int(round(0.1 * n)))
+        val_idx_full = perm[:n_val]
+        train_idx_full = perm[n_val:]
+
+        train_ds_full, val_ds_full, _ = create_quad_modality_datasets(
+            df,
+            smiles_embeddings,
+            smiles_indices,
+            text_embeddings,
+            eeg_data,
+            train_idx_full,
+            val_idx_full,
+            return_pid=True,
+        )
+        logger.info(f"  Refit train: {len(train_ds_full)}, early-stop val: {len(val_ds_full)}")
+
+        refit_result = train_fold_with_predictions(
+            train_ds_full,
+            val_ds_full,
+            fusion=fusion,
+            text_model=text_model,
+            smiles_model=smiles_model,
+            device=device,
+            fold=-1,
+            candidate_smiles=candidate_smiles,
+            asm_balance_mode=asm_balance_mode,
+        )
+
+        # Predict on the FULL cohort using the refit model. Build a "val
+        # dataset" that contains every patient by passing all indices as the
+        # val split.
+        logger.info("Predicting on full cohort with refit model")
+        all_idx = np.arange(n)
+        # The training preprocessor in create_quad_modality_datasets is fitted
+        # on the train split and applied to the val split. To avoid refitting
+        # on different data, we re-build using the same train indices used
+        # above so the preprocessor is identical, but with val_idx = all
+        # indices.
+        train_ds_for_pp, full_eval_ds, _ = create_quad_modality_datasets(
+            df,
+            smiles_embeddings,
+            smiles_indices,
+            text_embeddings,
+            eeg_data,
+            train_idx_full,
+            all_idx,
+            return_pid=True,
+        )
+        del train_ds_for_pp
+
+        # Inference on full cohort using the model we just trained (load best
+        # weights manually from refit_result and run predictions).
+        from torch.utils.data import DataLoader as _DL
+        from .models import get_model as _get_model
+        from .training import _predict_with_smiles_override
+        from .config import MLP_CONFIG as _MLP_CONFIG
+
+        model_full = _get_model(fusion=fusion, text_model=text_model, smiles_model=smiles_model, device=device)
+        if refit_result["model_state_dict"] is not None:
+            model_full.load_state_dict(refit_result["model_state_dict"])
+
+        full_loader = _DL(
+            full_eval_ds,
+            batch_size=_MLP_CONFIG["batch_size"],
+            shuffle=False,
+            drop_last=False,
+            num_workers=0,
+        )
+
+        pids_full, y_true_full, y_prob_full = _predict_with_smiles_override(
+            model_full, full_loader, device, fusion=fusion, smiles_override=None
+        )
+        y_prob_per_asm_full: Dict[str, List[float]] = {}
+        for asm_name, smiles_vec in candidate_smiles.items():
+            override = torch.from_numpy(np.asarray(smiles_vec, dtype=np.float32))
+            _, _, probs = _predict_with_smiles_override(
+                model_full, full_loader, device, fusion=fusion, smiles_override=override
+            )
+            y_prob_per_asm_full[asm_name] = probs
+        early_stop_frac = 0.1
 
     in_sample_payload = {
         "experiment": exp_name + (f"_{output_suffix}" if output_suffix else ""),
@@ -482,7 +502,8 @@ def run_exp7a_with_predictions(
         "smiles_model": smiles_model,
         "asms": asms_used,
         "refit_random_state": CV_CONFIG["random_state"],
-        "early_stop_frac": 0.1,
+        "early_stop_frac": early_stop_frac,
+        **({"selection": all_selection} if all_selection else {}),
         "metrics": {k: float(v) for k, v in refit_result["metrics"].items() if isinstance(v, (int, float)) and not isinstance(v, bool)},
         "pids": pids_full,
         "y_true": y_true_full,

@@ -18,7 +18,8 @@ from .config import (
 )
 from .data_pipeline import get_full_dataset, load_csv_data
 from shared.asm_balancing import WeightedASMDataset, compute_asm_sample_weights, weighted_cross_entropy
-from shared.cv_splits import fold_indices, outer_splits, rethreshold
+from shared.cv_splits import outer_splits, rethreshold
+from shared.epoch_selection import run_outer_fold
 from .models import ConcatMLPClassifier, SimplifiedFuseMoE
 
 
@@ -245,19 +246,21 @@ def run_experiment(
         'config': config,
     }
 
-    # Run cross-validation
-    for fold, (train_idx, val_idx) in enumerate(splits):
-        if verbose:
-            print(f"\n--- Fold {fold + 1}/{CV_CONFIG['n_splits']} ---")
+    def fit_fold(fit_idx, es_idx, test_idx=None, trace=None, fixed_epochs=None, refit_choice=None):
+        """Train on ``fit_idx`` and return the reported fold's metrics.
 
-        # Clean runs early-stop (and step the LR scheduler) on an inner split
-        # of the outer training fold and score the outer fold separately.
-        fit_idx, es_idx, test_idx = fold_indices(outcomes, train_idx, val_idx, fold, inner_val)
-
+        Legacy: early stopping, LR scheduling and metrics on ``es_idx`` (the
+        outer fold). Inner split: select on ``es_idx``, score ``test_idx``
+        once. Refit inner run: ``trace`` collects ``es_idx`` probabilities and
+        the learning rate per epoch. Refit: ``es_idx`` is None; train exactly
+        ``fixed_epochs`` epochs replaying the inner runs' median learning rate
+        per epoch (``refit_choice.lr_schedule``) in place of ReduceLROnPlateau,
+        then score ``test_idx`` unthresholded.
+        """
         # Create dataloaders (ASM-weighting wraps the train subset so each
         # sample carries an inverse-sqrt weight, aligned with fit_idx order).
         train_subset = Subset(dataset, fit_idx)
-        val_subset = Subset(dataset, es_idx)
+        val_subset = None if es_idx is None else Subset(dataset, es_idx)
 
         asm_weighted = asm_balance_mode == "weighted"
         if asm_weighted:
@@ -269,7 +272,7 @@ def run_experiment(
             batch_size=config['batch_size'],
             shuffle=True,
         )
-        val_loader = DataLoader(
+        val_loader = None if val_subset is None else DataLoader(
             val_subset,
             batch_size=config['batch_size'],
             shuffle=False,
@@ -281,7 +284,7 @@ def run_experiment(
                 batch_size=config['batch_size'],
                 shuffle=False,
             )
-            if verbose:
+            if verbose and es_idx is not None:
                 print(f"  Train: {len(fit_idx)}, Early-stop: {len(es_idx)}, Test: {len(test_idx)}")
 
         # Create model
@@ -317,7 +320,13 @@ def run_experiment(
         best_model_state = None
         global_step = 0
 
-        for epoch in range(config['epochs']):
+        for epoch in range(config['epochs'] if fixed_epochs is None else fixed_epochs):
+            if fixed_epochs is not None and refit_choice is not None and refit_choice.lr_schedule:
+                for group in optimizer.param_groups:
+                    group['lr'] = refit_choice.lr_schedule[epoch]
+            if trace is not None:
+                trace.setdefault('lr', []).append(optimizer.param_groups[0]['lr'])
+
             # Train
             train_loss, global_step = train_one_epoch(
                 model, train_loader, optimizer, criterion, device,
@@ -326,11 +335,15 @@ def run_experiment(
                 global_step=global_step,
                 asm_weighted=asm_weighted,
             )
+            if fixed_epochs is not None:
+                continue
 
             # Evaluate
             val_metrics = evaluate(model, val_loader, device, use_aux_loss=use_aux_loss)
             val_auc = val_metrics['auc']
             val_f1 = val_metrics['f1']
+            if trace is not None:
+                trace.setdefault('val_probs', []).append(np.asarray(val_metrics['y_prob'], dtype=float))
 
             scheduler.step(val_auc)
 
@@ -352,18 +365,36 @@ def run_experiment(
                 print(f"  Epoch {epoch + 1}: Loss={train_loss:.4f}, "
                       f"Val AUC={val_auc:.4f}, Val F1={val_f1:.4f}")
 
+        if fixed_epochs is not None:
+            return evaluate(model, test_loader, device, use_aux_loss=use_aux_loss)
+        if trace is not None:
+            return {}
+
         # Load best model and get final metrics
         model.load_state_dict(best_model_state)
         model.to(device)
 
         if test_loader is None:
-            final_metrics = evaluate(model, val_loader, device, use_aux_loss=use_aux_loss)
-        else:
-            # Clean protocol: score the outer fold once with the early-stopping-
-            # best weights, at the threshold chosen on the early-stopping set.
-            final_metrics = evaluate(model, test_loader, device, use_aux_loss=use_aux_loss)
-            final_metrics = rethreshold(final_metrics, best_es_metrics.get('optimal_threshold', 0.5))
-            final_metrics['es_auc'] = best_val_auc
+            return evaluate(model, val_loader, device, use_aux_loss=use_aux_loss)
+        # Clean protocol: score the outer fold once with the early-stopping-
+        # best weights, at the threshold chosen on the early-stopping set.
+        final_metrics = evaluate(model, test_loader, device, use_aux_loss=use_aux_loss)
+        final_metrics = rethreshold(final_metrics, best_es_metrics.get('optimal_threshold', 0.5))
+        final_metrics['es_auc'] = best_val_auc
+        return final_metrics
+
+    # Run cross-validation
+    for fold, (train_idx, val_idx) in enumerate(splits):
+        if verbose:
+            print(f"\n--- Fold {fold + 1}/{CV_CONFIG['n_splits']} ---")
+
+        # Clean runs select (early stopping, LR scheduling, threshold) on
+        # inner data of the outer training fold and score the outer fold once.
+        final_metrics, selection = run_outer_fold(
+            outcomes, train_idx, val_idx, fold, inner_val,
+            make_datasets=lambda a, b: (a, b),
+            train=lambda a, b, test_dataset=None, **kw: fit_fold(a, b, test_dataset, **kw),
+        )
 
         if prediction_logger is not None:
             prediction_logger.log_fold(
@@ -372,6 +403,7 @@ def run_experiment(
                 y_true=final_metrics['y_true'],
                 y_prob=final_metrics['y_prob'],
                 threshold=final_metrics.get('optimal_threshold'),
+                selection=selection,
             )
 
         results['fold_accuracy'].append(final_metrics['accuracy'])

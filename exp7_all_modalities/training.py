@@ -603,6 +603,9 @@ def train_fold_with_predictions(
     candidate_smiles: Dict[str, np.ndarray] = None,
     asm_balance_mode: str = "none",
     test_dataset=None,
+    trace=None,
+    fixed_epochs=None,
+    refit_choice=None,
 ) -> Dict[str, Any]:
     """Train one fold and return per-patient predictions plus ASM-swap predictions.
 
@@ -636,7 +639,7 @@ def train_fold_with_predictions(
         drop_last=False,
         num_workers=0,
     )
-    val_loader = DataLoader(
+    val_loader = None if val_dataset is None else DataLoader(
         val_dataset,
         batch_size=config["batch_size"],
         shuffle=False,
@@ -725,7 +728,7 @@ def train_fold_with_predictions(
             drop_last=False,
             num_workers=0,
         )
-    val_loader_for_loss = DataLoader(
+    val_loader_for_loss = None if val_dataset is None else DataLoader(
         _DropPidWrapper(val_dataset),
         batch_size=config["batch_size"],
         shuffle=False,
@@ -733,7 +736,7 @@ def train_fold_with_predictions(
         num_workers=0,
     )
 
-    for epoch in range(config["epochs"]):
+    for epoch in range(config["epochs"] if fixed_epochs is None else fixed_epochs):
         if fusion == "moe":
             train_loss, global_step = train_fn(
                 model, train_loader_for_loss, optimizer, criterion, device, global_step,
@@ -744,7 +747,11 @@ def train_fold_with_predictions(
                 model, train_loader_for_loss, optimizer, criterion, device,
                 asm_weighted=asm_weighted, class_weights=class_weights,
             )
+        if fixed_epochs is not None:
+            continue
         val_loss, val_metrics = eval_fn(model, val_loader_for_loss, criterion, device)
+        if trace is not None:
+            trace.setdefault("val_probs", []).append(np.asarray(val_metrics["y_prob"], dtype=float))
 
         if val_metrics["auc"] > best_val_auc:
             best_val_auc = val_metrics["auc"]
@@ -765,23 +772,39 @@ def train_fold_with_predictions(
             break
 
     # Restore best weights for inference.
-    if best_state_dict is not None:
-        model.load_state_dict(best_state_dict)
-
-    # Clean protocol: everything below is reported on the untouched outer
-    # fold; legacy runs report the early-stopping fold itself.
-    if test_dataset is not None:
-        best_metrics = _score_outer_fold(
-            model, test_dataset, eval_fn, criterion, device,
-            config["batch_size"], best_metrics, best_val_auc,
+    if fixed_epochs is not None:
+        # Refit protocol: final weights after exactly fixed_epochs; the
+        # metrics are unthresholded (run_outer_fold applies the inner threshold).
+        best_state_dict = copy.deepcopy(model.state_dict())
+        test_loader = DataLoader(
+            _DropPidWrapper(test_dataset), batch_size=config["batch_size"],
+            shuffle=False, drop_last=False, num_workers=0,
         )
+        best_metrics = eval_fn(model, test_loader, criterion, device)[1]
         val_loader = DataLoader(
-            test_dataset,
-            batch_size=config["batch_size"],
-            shuffle=False,
-            drop_last=False,
-            num_workers=0,
+            test_dataset, batch_size=config["batch_size"],
+            shuffle=False, drop_last=False, num_workers=0,
         )
+    elif trace is not None:
+        return {}  # refit inner run: only the trace is needed
+    else:
+        if best_state_dict is not None:
+            model.load_state_dict(best_state_dict)
+
+        # Clean protocol: everything below is reported on the untouched outer
+        # fold; legacy runs report the early-stopping fold itself.
+        if test_dataset is not None:
+            best_metrics = _score_outer_fold(
+                model, test_dataset, eval_fn, criterion, device,
+                config["batch_size"], best_metrics, best_val_auc,
+            )
+            val_loader = DataLoader(
+                test_dataset,
+                batch_size=config["batch_size"],
+                shuffle=False,
+                drop_last=False,
+                num_workers=0,
+            )
 
     # Per-patient predictions under the prescribed ASM.
     val_pids, val_y_true, val_y_prob = _predict_with_smiles_override(

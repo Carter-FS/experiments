@@ -30,7 +30,8 @@ from exp2_fusion.models.eeg_transformer import EEGWindowTransformer
 from exp2_fusion.models.aggregators import get_aggregator
 from exp2_fusion.training import train_epoch, evaluate
 from exp8_stratification.stratified_cv import get_multilabel_splits, get_outcome_only_splits
-from shared.cv_splits import add_cv_args, cv_suffix, fold_indices, outer_splits, rethreshold
+from shared.cv_splits import add_cv_args, cv_suffix, outer_splits, rethreshold
+from shared.epoch_selection import run_outer_fold
 from shared.cv_splits import apply_cv_args  # noqa: E402
 from .config import RESULTS_DIR, CV_CONFIG
 
@@ -238,28 +239,15 @@ def run_ablation_experiment(
     fold_metrics = {"auc": [], "balanced_acc_tuned": [], "f1_tuned": []}
     outcomes = df["outcome"].values
 
-    for fold, (train_idx, val_idx) in enumerate(splits):
-        logger.info(f"  Fold {fold + 1}/{len(splits)}")
+    encoder_type = ablation_config.get("encoder_type", "simplecnn")
+    batch_size = BATCH_SIZE_BY_ENCODER.get(encoder_type, 8)
+    chunk_size = CHUNK_SIZE_BY_ENCODER.get(encoder_type, 32)
 
-        # Create datasets. Clean runs early-stop on an inner split and score
-        # the outer fold separately.
-        fit_idx, es_idx, test_idx = fold_indices(outcomes, train_idx, val_idx, fold, inner_val)
-        train_ds, val_ds = create_datasets(
-            eeg_data, smiles_embeddings, smiles_indices, df,
-            fit_idx, es_idx,
-            max_channels=n_channels,
-        )
-        test_ds = create_datasets(
-            eeg_data, smiles_embeddings, smiles_indices, df,
-            fit_idx, test_idx,
-            max_channels=n_channels,
-        )[1] if test_idx is not None else None
-
-        encoder_type = ablation_config.get("encoder_type", "simplecnn")
-        batch_size = BATCH_SIZE_BY_ENCODER.get(encoder_type, 8)
-        chunk_size = CHUNK_SIZE_BY_ENCODER.get(encoder_type, 32)
+    def fit_fold(train_ds, val_ds, test_dataset=None, trace=None, fixed_epochs=None, refit_choice=None):
+        """Train one model; legacy / inner split / refit as in exp4's train_fold."""
+        test_ds = test_dataset
         train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
-        val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
+        val_loader = None if val_ds is None else DataLoader(val_ds, batch_size=batch_size, shuffle=False)
 
         # Create model
         model = AblationModel(
@@ -295,9 +283,13 @@ def run_ablation_experiment(
         best_state = None
         patience_counter = 0
 
-        for epoch in range(100):
+        for epoch in range(100 if fixed_epochs is None else fixed_epochs):
             train_epoch(model, train_loader, optimizer, criterion, device, is_moe=False)
+            if fixed_epochs is not None:
+                continue
             _, metrics = evaluate(model, val_loader, criterion, device, is_moe=False)
+            if trace is not None:
+                trace.setdefault("val_probs", []).append(np.asarray(metrics["y_prob"], dtype=float))
 
             if metrics["auc"] > best_auc:
                 best_auc = metrics["auc"]
@@ -311,6 +303,12 @@ def run_ablation_experiment(
             if patience_counter >= 20:
                 break
 
+        if fixed_epochs is not None:
+            # Refit protocol: final weights, unthresholded (run_outer_fold
+            # applies the inner-fold threshold).
+            test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
+            return evaluate(model, test_loader, criterion, device, is_moe=False)[1]
+
         if test_ds is not None:
             # Clean protocol: score the outer fold once with the
             # early-stopping-best weights, at the threshold chosen on the
@@ -321,6 +319,20 @@ def run_ablation_experiment(
             _, test_metrics = evaluate(model, test_loader, criterion, device, is_moe=False)
             best_metrics = rethreshold(test_metrics, best_metrics.get("optimal_threshold", 0.5))
             best_metrics["es_auc"] = best_auc
+        return best_metrics
+
+    for fold, (train_idx, val_idx) in enumerate(splits):
+        logger.info(f"  Fold {fold + 1}/{len(splits)}")
+
+        # Create datasets. Clean runs select on inner data (inner split, or
+        # inner folds + refit) and score the outer fold once.
+        best_metrics, selection = run_outer_fold(
+            outcomes, train_idx, val_idx, fold, inner_val,
+            make_datasets=lambda a, b: create_datasets(
+                eeg_data, smiles_embeddings, smiles_indices, df, a, b, max_channels=n_channels,
+            ),
+            train=fit_fold,
+        )
 
         for key in fold_metrics:
             if key in best_metrics:
@@ -334,6 +346,7 @@ def run_ablation_experiment(
                 y_true=best_metrics["y_true"],
                 y_prob=best_metrics["y_prob"],
                 threshold=best_metrics.get("optimal_threshold"),
+                selection=selection,
             )
 
         logger.info(f"    Fold {fold + 1}: AUC={best_metrics.get('auc', 0):.4f}")

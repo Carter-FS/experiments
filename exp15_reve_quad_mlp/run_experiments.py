@@ -16,9 +16,10 @@ from typing import Dict, List
 import numpy as np
 import torch
 
-from shared.cv_splits import add_cv_args, current_seed, cv_suffix, fold_indices, outer_splits
+from shared.cv_splits import add_cv_args, current_seed, cv_suffix, outer_splits
+from shared.epoch_selection import run_outer_fold
 from shared.cv_splits import apply_cv_args  # noqa: E402
-from shared.prediction_logger import run_provenance
+from shared.prediction_logger import protocol_metadata, run_provenance
 
 from .config import ASM_NAME_MAPPING, CV_CONFIG, RESULTS_DIR
 from .data_pipeline import (
@@ -140,33 +141,19 @@ def run_exp15_with_predictions(
         from shared.determinism import enable_determinism
         enable_determinism(seed + fold)
 
-        # Clinical preprocessor is fitted on the fit set only. Clean runs
-        # early-stop on an inner split and predict the outer fold separately.
-        fit_idx, es_idx, test_idx = fold_indices(outcomes, train_idx, val_idx, fold, inner_val)
-        train_ds, val_ds, _ = create_reve_quad_datasets(
-            df, smiles_embeddings, smiles_indices, text_embeddings, reve_data,
-            fit_idx, es_idx,
-            return_pid=True,
-        )
-        test_ds = None
-        if test_idx is not None:
-            test_ds = create_reve_quad_datasets(
-                df, smiles_embeddings, smiles_indices, text_embeddings, reve_data,
-                fit_idx, test_idx,
+        # Clinical preprocessor is fitted on the fit set only. Clean runs select
+        # on inner data (inner split, or inner folds + refit) and predict the outer fold once.
+        result, selection = run_outer_fold(
+            outcomes, train_idx, val_idx, fold, inner_val,
+            make_datasets=lambda a, b: create_reve_quad_datasets(
+                df, smiles_embeddings, smiles_indices, text_embeddings, reve_data, a, b,
                 return_pid=True,
-            )[1]
-        logger.info(
-            f"  Train: {len(train_ds)}, Early-stop: {len(val_ds)}"
-            + (f", Test: {len(test_ds)}" if test_ds is not None else "")
-        )
-
-        result = train_fold_with_predictions(
-            train_ds, val_ds,
-            device=device,
-            fold=fold,
-            candidate_smiles=candidate_smiles,
-            asm_balance_mode=asm_balance_mode,
-            test_dataset=test_ds,
+            )[:2],
+            train=lambda tr, va, **kw: train_fold_with_predictions(
+                tr, va, device=device, fold=fold, candidate_smiles=candidate_smiles,
+                asm_balance_mode=asm_balance_mode, **kw,
+            ),
+            log=logger.info,
         )
 
         scalar_metrics = {
@@ -180,6 +167,7 @@ def run_exp15_with_predictions(
             "y_true": result["val_y_true"],
             "y_prob": result["val_y_prob"],
             "y_prob_per_asm": {a: result["val_y_prob_per_asm"].get(a, []) for a in asms_used},
+            **({"selection": selection} if selection else {}),
         })
         logger.info(
             f"  Fold {fold + 1}: AUC={result['metrics'].get('auc', float('nan')):.4f}, "
@@ -197,6 +185,7 @@ def run_exp15_with_predictions(
         "n_splits": CV_CONFIG["n_splits"],
         "folds": folds_payload,
         "metadata": {
+            **protocol_metadata(inner_val),
             "splitter": splitter,
             "inner_val": inner_val,
             "asm_balance": asm_balance_mode,
