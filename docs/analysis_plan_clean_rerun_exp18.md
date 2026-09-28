@@ -401,3 +401,150 @@ Section 6, seeds 42-46.
 
 **Placement.** Main text vs Supplementary is decided with the supervisor
 after the results. No promotion rule is pre-specified.
+
+## Addendum B (2026-09-28): post-audit corrections and the refit protocol
+
+Written after the first clean M3 rerun (Sections 2-6 plus Addendum A) had
+produced results, and after three independent read-only audits of that run.
+Every item below is therefore a **post-hoc deviation**, decided with those
+results in view. They are listed with the reason for each so a reader can
+judge them. Everything is committed before any run that uses them.
+
+### B.1 Melbourne outcome polarity
+
+The Melbourne CSV codes `outcome` 1/2. Every script mapped raw 1 to
+not-seizure-free and raw 2 to seizure-free (`shared/cohort.py`). The only
+source for that convention was a code comment. The data dictionary that came
+with the data (`List_Missing_clinical_factors_07Nov2025.xlsx`, sheet
+`ASM_regimen`, field `outcome_12m`) says "1 = success, 2 = failure", where
+success is seizure-free for the first 12 months while still taking the
+regimen, and failure is not seizure-free or a switch to or addition of
+another ASM within 12 months. For the 38 Melbourne patients who also appear
+in that workbook the raw CSV value agrees with the dictionary field in 19 of
+21 (raw 1) and 15 of 15 (raw 2) cases. The audits also found that every
+univariate association with established predictors ran the wrong way in
+Melbourne and the right way in HEP1, and that every Melbourne-to-HEP1 AUC sat
+below 0.5.
+
+From here on raw 1 = seizure-free (label 1) and raw 2 = not seizure-free
+(label 0). Every prediction made before this addendum used the inverted
+Melbourne label. Internal AUCs are unaffected in expectation (AUC is symmetric
+under a consistent flip and retraining), but every cross-cohort estimate,
+threshold, calibration, recommendation and descriptive table is. All are
+rerun; nothing is re-mapped after the fact. Confirmation from the data
+custodian is still requested.
+
+Check after the flip (`python -m shared.polarity_check`, aggregate rates of
+label 1 with vs without each predictor of drug resistance):
+
+| Predictor | Melbourne | HEP1 |
+|---|---|---|
+| >5 pre-treatment seizures | 0.37 vs 0.55 | 0.32 vs 0.35 |
+| psychiatric history | 0.37 vs 0.55 | 0.26 vs 0.36 |
+| epileptiform EEG | 0.47 vs 0.52 | 0.25 vs 0.39 |
+| abnormal imaging | 0.50 vs 0.53 | 0.32 vs 0.35 |
+| head trauma | 0.53 vs 0.51 | 0.23 vs 0.34 |
+| learning disability (Melbourne n=3) | 0.67 vs 0.51 | 0.36 vs 0.33 |
+
+With the corrected label the main predictors lower seizure freedom in both
+cohorts, as expected.
+
+### B.2 Refit protocol (primary from here on)
+
+The audit of the first clean run found that the Section 2 inner split is too
+small to choose an epoch: 13 to 32 patients, and 18% of early stops chose
+epoch 1 or earlier, so those folds scored an almost untrained model. The
+protocol for every experiment becomes, per outer fold (`train_idx` = the whole
+outer training fold):
+
+1. Five stratified inner folds of `train_idx`
+   (`StratifiedKFold(5, shuffle=True, random_state=s + fold)`) on the same
+   stratification labels as the outer split. All preprocessing is refitted on
+   each inner-train set.
+2. Each inner model trains with the frozen loop and hyperparameters,
+   patience included, and records its inner-validation probabilities at every
+   epoch. A model that stops early carries its last recorded probabilities
+   forward to the longest inner run.
+3. Criterion per epoch: AUC of the pooled inner out-of-fold probabilities over
+   all of `train_idx`; for exp18 mixed arms the cohort-stratified pooled AUC
+   (B.6). The curve is smoothed with a centred 3-epoch moving average and the
+   selected epoch E* is its argmax (earliest on ties).
+4. Threshold: Youden J on the pooled inner out-of-fold probabilities at E*
+   (0.5 if non-finite).
+5. Refit: preprocessing and class weights on all of `train_idx`, a fresh model
+   trained for exactly E* epochs with the same seeds, E* not rescaled.
+   exp1 and exp2 replay the per-epoch median learning rate of the inner runs
+   in place of `ReduceLROnPlateau`. exp3b replays the inner temperature
+   schedule by epoch.
+6. The outer test fold is scored once.
+
+Logistic regression estimators (exp19) choose C the same way (pooled inner
+out-of-fold AUC per C), then refit. File suffix `_sp-multilabel_rf5_s<seed>`.
+Seeds 42-46 as before.
+
+The refit protocol is the primary analysis. The Section 2 inner-split results
+(`_sp-multilabel_iv20_s<seed>`) are kept unchanged and reported in the
+Supplementary as the pre-registered protocol, next to the refit results, so
+the effect of this post-hoc change is visible. The exp4 decomposition grows to
+splitter x {no inner selection, inner split, refit}.
+
+### B.3 Clinical encoding
+
+`lesion` and `eeg_cat` (codes 1/2/3) were collapsed to one normal/abnormal
+flag each, which discards the epileptiform vs non-epileptiform distinction
+that carries most of the HEP1 signal. They become 3-level one-hot (mode
+imputation before encoding, fitted on training rows). Age stays as four bins
+after mean imputation; binary features keep mode imputation. The clinical
+input grows from 19 to 23 dimensions.
+
+### B.4 Cross-cohort feature set
+
+`drug`, `alcohol` and `focal` are constant in HEP1 (every patient "No", "No",
+"focal"), so in any model that sees both cohorts they carry no within-HEP1
+information and act as cohort indicators. exp18 and every HEP1 transfer
+script (forward, reverse, focal, reduced, EEG) use the remaining 13 features.
+Melbourne-only experiments keep all 16.
+
+### B.5 HEP1 harmonised outcome (sensitivity analysis)
+
+HEP1's provided `outcome` (1 = still on the first regimen and seizure-free)
+stays the primary label. Among outcome-0 patients, 52 have `end_date` at least
+12 months after `start_date`; if `end_date` is the failure date, those patients
+completed 12 months on the regimen, which is a success under the Melbourne
+definition. Sensitivity label `harmonised12`: outcome 0 with
+`end_date - start_date >= 365.25` days is recoded to 1, and rows with a
+non-positive duration are dropped. Run for exp18, the HEP1 forward and reverse
+scripts and exp19 external (file tag `_h12`). Seizure-free patients have no
+follow-up date, so censoring cannot be applied. The meaning of `end_date` is
+to be confirmed by the data custodian.
+
+### B.6 exp18 selection and test ratio
+
+The mixed arm selects its epoch on the cohort-stratified pooled inner AUC
+(pair-weighted mean of within-cohort AUCs, Section 6), so selection cannot
+reward separating the cohorts. The Nadeau-Bengio ratio uses n_test / n_train
+of the arm being tested rather than of the pooled outer fold.
+
+### B.7 exp19
+
+- Zero-shot scores are computed in float32 from the final hidden state and the
+  two `lm_head` rows. The bf16 output layer gave about 25 distinct scores for
+  198 patients.
+- Configuration D uses segment-balanced pooling: the mean of the paragraph
+  embedding and the report embedding, each embedded on its own. The
+  token-mean D is kept as `D-tok` (descriptive).
+- Qwen3-Embedding-8B (last-token pooling, L2 normalised, the model card's
+  instruction prefix) is added as a secondary encoder for parity with
+  Hegselmann et al. 2025. It is outside the Holm family of A.1.
+- Equivalence is read from a 90% Nadeau-Bengio CI against +/-0.05 (two
+  one-sided tests), Holm-adjusted over the three primary encoders.
+  Superiority still uses the 95% CI.
+
+### B.8 Seed averaging and CIs
+
+The point estimate stays the mean over seeds of each seed's pooled estimate.
+The CI changes from the mean of per-seed CI bounds to a patient-level
+bootstrap shared across seeds: each replicate resamples patients once, applies
+that resample to every seed's file (each seed keeps its own fold assignment),
+recomputes each seed's pooled estimate and averages over seeds. 1000
+replicates, 2.5 and 97.5 percentiles. Seed-to-seed SD is still reported.

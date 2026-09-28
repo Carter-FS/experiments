@@ -952,8 +952,9 @@ def get_valid_patient_eeg_pairs(
     df["outcome"] = pd.to_numeric(df["outcome"], errors="coerce")
     df = df[df["outcome"].isin([1, 2])].copy()
 
-    # Map outcomes: 1 (failure) -> 0, 2 (success) -> 1
-    df["outcome"] = df["outcome"].map({1: 0, 2: 1})
+    # Map raw outcomes through the single shared mapping (1 = success -> 1).
+    from shared.cohort import OUTCOME_MAPPING
+    df["outcome"] = df["outcome"].map(OUTCOME_MAPPING)
 
     # Build EEG map
     eeg_map = build_patient_eeg_map(eeg_dir)

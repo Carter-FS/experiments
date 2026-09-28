@@ -28,7 +28,7 @@ def _frame(rows):
 def test_outcome_filter_and_map():
     df = _frame([_row("a", "1"), _row("b", "2"), _row("c", " "), _row("d", "0")])
     out = filter_and_map_outcome(df)
-    assert out["outcome"].tolist() == [0, 1]  # 1->0, 2->1; blank and 0 dropped
+    assert out["outcome"].tolist() == [1, 0]  # 1 (success)->1, 2 (failure)->0; blank and 0 dropped
     assert out["pid"].tolist() == ["a", "b"]
 
 

@@ -48,35 +48,44 @@ EEG_CONFIGS = ("Exp5c", "Exp6b", "Exp6b_eeg2vec", "Exp7a", "Exp16_tiny")
 # Models (reuse the exp4-7 / exp11 architectures)
 # -----------------------------------------------------------------------
 
-def build_model(config: str, device: torch.device) -> nn.Module:
+def build_model(config: str, device: torch.device, clinical_dim: int | None = None) -> nn.Module:
+    """``clinical_dim`` is the clinical input width (the preprocessor's
+    ``output_dim``); None means the full 16-feature encoding. Cross-cohort
+    callers pass the reduced width (analysis plan B.4)."""
+    from exp4_baseline.config import CLINICAL_DIM
+    cd = CLINICAL_DIM if clinical_dim is None else int(clinical_dim)
     if config == "Exp4a":
-        from exp4_baseline.models import get_model
-        return get_model("mlp", device)
+        from exp4_baseline.config import CONFIG_4A
+        from exp4_baseline.models import ClinicalMLP
+        return ClinicalMLP(input_dim=cd, hidden_dims=CONFIG_4A["hidden_dims"],
+                           num_classes=CONFIG_4A["num_classes"], dropout=CONFIG_4A["dropout"]).to(device)
     if config == "Exp5a":
         from exp5_clinical_fusion.models import ClinicalSMILESFusion
-        return ClinicalSMILESFusion(smiles_dim=768).to(device)
+        return ClinicalSMILESFusion(clinical_dim=cd, smiles_dim=768).to(device)
     if config == "Exp5b":
         from exp5_clinical_fusion.models import ClinicalTextFusion
-        return ClinicalTextFusion().to(device)
+        return ClinicalTextFusion(clinical_dim=cd).to(device)
     if config == "Exp5c":
         from exp5_clinical_fusion.models import ClinicalEEGFusion
-        return ClinicalEEGFusion(n_channels=N_CHANNELS, n_times=N_TIMES, max_windows=MAX_WINDOWS).to(device)
+        return ClinicalEEGFusion(clinical_dim=cd, n_channels=N_CHANNELS, n_times=N_TIMES,
+                                 max_windows=MAX_WINDOWS).to(device)
     if config in ("Exp6b", "Exp6b_eeg2vec"):
         # Exp6b is the original SimpleCNN model the published HEP1 table used;
         # the clean protocol pre-specifies EEG2Vec for every EEG configuration.
         from exp6_clinical_triple.models import ClinicalSMILESEEGFusion
         encoder = "eeg2vec" if config == "Exp6b_eeg2vec" else "simplecnn"
-        return ClinicalSMILESEEGFusion(n_channels=N_CHANNELS, n_times=N_TIMES, max_windows=MAX_WINDOWS,
-                                       eeg_encoder_type=encoder).to(device)
+        return ClinicalSMILESEEGFusion(clinical_dim=cd, n_channels=N_CHANNELS, n_times=N_TIMES,
+                                       max_windows=MAX_WINDOWS, eeg_encoder_type=encoder).to(device)
     if config == "Exp7a":
         from exp7_all_modalities.models import QuadFusionMLP
-        return QuadFusionMLP(n_channels=N_CHANNELS, n_times=N_TIMES, max_windows=MAX_WINDOWS).to(device)
+        return QuadFusionMLP(clinical_dim=cd, n_channels=N_CHANNELS, n_times=N_TIMES,
+                             max_windows=MAX_WINDOWS).to(device)
     if config == "Exp16_tiny":
         # Reduced-capacity quad model (exp16 "tiny": hidden_dim 16, eeg_embed_dim 64,
         # MeanMax pooling; ~157k params vs ~2M). Same forward signature as Exp7a.
         from exp11_eeg_upgrade.models import QuadMLPv2
         return QuadMLPv2(
-            hidden_dim=16, eeg_embed_dim=64, aggregator_type="meanmax",
+            clinical_dim=cd, hidden_dim=16, eeg_embed_dim=64, aggregator_type="meanmax",
             eeg_encoder_type="eeg2vec",
             n_channels=N_CHANNELS, n_times=N_TIMES, max_windows=MAX_WINDOWS,
         ).to(device)
@@ -211,12 +220,14 @@ def compute_metrics(y_true: np.ndarray, y_prob: np.ndarray) -> dict:
             "n_responder": int(y_true.sum())}
 
 
-def refit_clinical(train_df: pd.DataFrame, apply_df: pd.DataFrame, fit_idx: np.ndarray):
+def refit_clinical(train_df: pd.DataFrame, apply_df: pd.DataFrame, fit_idx: np.ndarray,
+                   drop: tuple[str, ...] = ()):
     """Clinical tensors for both cohorts with the preprocessor fitted on the
     training cohort's fit rows only (clean protocol; imputation statistics
-    otherwise leak from the outer test fold)."""
+    otherwise leak from the outer test fold). ``drop`` removes binary
+    features (cross-cohort runs pass hep_cohort.CROSS_COHORT_DROP)."""
     from exp4_baseline.data_pipeline import ClinicalFeaturePreprocessor
-    pre = ClinicalFeaturePreprocessor().fit(train_df.iloc[fit_idx])
+    pre = ClinicalFeaturePreprocessor(drop=drop).fit(train_df.iloc[fit_idx])
     to_t = lambda d: torch.from_numpy(pre.transform(d)).float()  # noqa: E731
     return to_t(train_df), to_t(apply_df)
 

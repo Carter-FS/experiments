@@ -1,5 +1,6 @@
 """Configuration for Experiment 10: Direct LLM Text Modality."""
 
+from exp4_baseline.config import CLINICAL_DIM as _EXP4_CLINICAL_DIM  # single source of truth
 from pathlib import Path
 
 # Paths
@@ -28,10 +29,10 @@ CLINICAL_CONFIG = {
         "ld",
     ],
     "categorical_features": ["lesion", "eeg_cat"],
-    "input_dim": 19,  # 13 binary + 4 age bins + 2 binary categorical
+    "input_dim": _EXP4_CLINICAL_DIM,  # see exp4_baseline/config.py
 }
 
-CLINICAL_DIM = 19
+CLINICAL_DIM = _EXP4_CLINICAL_DIM
 
 # LLM model configurations
 LLM_MODELS = {
@@ -89,8 +90,8 @@ CV_CONFIG = {
     "random_state": 42,
 }
 
-# Outcome mapping: 1=failure->0, 2=success->1
-OUTCOME_MAPPING = {1: 0, 2: 1}
+# Outcome mapping: raw 1 = success -> 1, raw 2 = failure -> 0
+from shared.cohort import OUTCOME_MAPPING  # single source of truth  # noqa: E402,F401
 
 # Experiment definitions
 EXPERIMENTS = [

@@ -6,6 +6,7 @@ Mirrors exp7_all_modalities.config but with REVE-specific paths and a
 comparison against the published Exp7a-EEG2Vec headline is direct.
 """
 
+from exp4_baseline.config import CLINICAL_DIM as _EXP4_CLINICAL_DIM  # single source of truth
 from pathlib import Path
 
 # Paths
@@ -29,7 +30,7 @@ CLINICAL_CONFIG = {
         "cvd", "psy", "ld",
     ],
     "categorical_features": ["lesion", "eeg_cat"],
-    "input_dim": 19,
+    "input_dim": _EXP4_CLINICAL_DIM,  # see exp4_baseline/config.py
 }
 
 # Text embeddings (re-used from exp1/exp3)
@@ -46,7 +47,7 @@ SMILES_EMBEDDINGS = {
 ASM_NAMES_FILE = OUTPUTS_DIR / "asm_drug_names.txt"
 
 # Embedding dimensions
-CLINICAL_DIM = 19
+CLINICAL_DIM = _EXP4_CLINICAL_DIM
 TEXT_DIM = 768
 REVE_DIM = 512        # REVE-base attention-pooled per-window embedding
 EEG_AGG_DIM = 256     # the aggregator's embed_dim - matches exp7's EEG2Vec aggregator
@@ -94,7 +95,7 @@ CV_CONFIG = {
 # ASM name mapping (re-used from exp7)
 from shared.cohort import ASM_NAME_MAPPING  # single source of truth  # noqa: E402,F401
 
-# Outcome mapping: 1=failure->0, 2=success->1 (identical to exp7)
+# Outcome mapping: raw 1 = success -> 1, raw 2 = failure -> 0
 from shared.cohort import OUTCOME_MAPPING  # single source of truth  # noqa: E402,F401
 
 # Experiment definitions - only Exp7a-equivalent (MLP + ClinicalBERT + ChemBERTa)

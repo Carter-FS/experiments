@@ -5,6 +5,7 @@ of unfrozen layers. Frozen Qwen achieves AUC 0.689 (exp10), matching
 fine-tuned ClinicalBERT (0.691). Fine-tuning may push it higher.
 """
 
+from exp4_baseline.config import CLINICAL_DIM as _EXP4_CLINICAL_DIM  # single source of truth
 from pathlib import Path
 
 # Paths
@@ -20,7 +21,7 @@ QWEN_CONFIG = {
 }
 
 # Clinical feature dimension (from exp10)
-CLINICAL_DIM = 19
+CLINICAL_DIM = _EXP4_CLINICAL_DIM
 
 # Fine-tuning configurations to test
 FINETUNE_CONFIGS = [

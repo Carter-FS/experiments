@@ -68,6 +68,11 @@ SMILES_VOCAB_TO_ABBREV = {
     "Pregabalin": "PGB", "Clobazam": "CLB", "Clonazepam": "CLZ",
 }
 
+# Binary features constant in HEP1 (every patient "No", "No", focal). In any
+# model that sees both cohorts they only identify the cohort, so exp18 and the
+# HEP transfer scripts drop them (analysis plan B.4).
+CROSS_COHORT_DROP = ("drug", "alcohol", "focal")
+
 ALFRED_TRAINING_ASMS = {"LEV", "VPA", "CBZ", "LTG", "PTN", "TPM"}
 
 
@@ -105,8 +110,8 @@ def load_alfred() -> pd.DataFrame:
 # clinical inputs on HEP (only the age bins survive). MRI/EEG 3-way coding is
 # verified against Alfred's raw report text: code 1 = NORMAL, 2 = non-epileptiform
 # abnormality, 3 = epileptiform/abnormal (Table 1 / build_cohort_table.py use the
-# same polarity since thesisStandalone 2eb26a1). The preprocessor collapses to
-# (code > 1) == "abnormal", so HEP must use the same sense: Normal -> 1.
+# same polarity since thesisStandalone 2eb26a1). The preprocessor one-hots the
+# three levels (analysis plan B.3), so HEP must use the same codes: Normal -> 1.
 _HEP_YESNO = {"No": 0.0, "Yes": 1.0}
 _HEP_CLINICAL_MAPS = {
     "sex": {"Male": 0.0, "Female": 1.0},
@@ -207,10 +212,12 @@ def load_hep_text_embeddings() -> tuple[dict[str, np.ndarray], list[str]]:
 # Clinical feature builder (reuse exp4_baseline preprocessor)
 # -----------------------------------------------------------------------
 
-def build_clinical_features(df: pd.DataFrame, preprocessor=None):
+def build_clinical_features(df: pd.DataFrame, preprocessor=None, drop: tuple[str, ...] = ()):
+    """Clinical tensor for ``df``. With no ``preprocessor`` one is fitted on
+    ``df`` itself, which is only correct when ``df`` is the training data."""
     from exp4_baseline.data_pipeline import ClinicalFeaturePreprocessor
     if preprocessor is None:
-        preprocessor = ClinicalFeaturePreprocessor()
+        preprocessor = ClinicalFeaturePreprocessor(drop=drop)
         preprocessor.fit(df)
     feature_matrix = preprocessor.transform(df)
     features = torch.from_numpy(feature_matrix).float()

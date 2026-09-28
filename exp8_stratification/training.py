@@ -25,6 +25,7 @@ from .data_pipeline import create_dataset_from_indices
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from exp4_baseline.config import CLINICAL_DIM  # noqa: E402
 from exp7_all_modalities.models import QuadFusionMLP
 
 logger = logging.getLogger("exp8")
@@ -152,7 +153,7 @@ def train_fold(
 
     # Create model
     model = QuadFusionMLP(
-        clinical_dim=19,
+        clinical_dim=CLINICAL_DIM,
         text_dim=768,
         smiles_dim=768,
         n_channels=EEG_ENCODER_CONFIG["n_channels"],

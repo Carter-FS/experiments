@@ -28,7 +28,9 @@ STRONG = {"age_gap": 1, "mismatch": 1, "text_sim": 0.8}
 
 
 def abnormal(series: pd.Series) -> pd.Series:
-    """MRI / EEG category collapsed as the preprocessor does: code > 1 is abnormal."""
+    """MRI / EEG category collapsed to abnormal (code > 1). A deliberately coarse
+    match that tolerates the two sites grading the same report differently; the
+    models themselves one-hot all three levels (analysis plan B.3)."""
     return (pd.to_numeric(series, errors="coerce") > 1).astype(float).where(series.notna())
 
 

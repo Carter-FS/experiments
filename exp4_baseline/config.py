@@ -33,9 +33,12 @@ CLINICAL_CONFIG = {
         "ld",
     ],
     "categorical_features": ["lesion", "eeg_cat"],
-    # Final dimension: 13 binary + 4 age bins + 2 binary categorical = 19
-    "input_dim": 19,
+    # Final dimension: 13 binary + 4 age bins + 2 x 3 one-hot categorical = 23
+    # (analysis plan B.3; 19 before 2026-09-28 when the categories were
+    # collapsed to normal/abnormal). Must equal ClinicalFeaturePreprocessor.n_features().
+    "input_dim": 23,
 }
+CLINICAL_DIM = CLINICAL_CONFIG["input_dim"]
 
 # Experiment 4a: Simple MLP
 CONFIG_4A = {
@@ -70,7 +73,7 @@ CV_CONFIG = {
     "random_state": 42,
 }
 
-# Outcome mapping: 1=failure->0, 2=success->1 (matching exp3)
+# Outcome mapping: raw 1 = success -> 1, raw 2 = failure -> 0
 from shared.cohort import OUTCOME_MAPPING  # single source of truth  # noqa: E402,F401
 
 # Experiments to run

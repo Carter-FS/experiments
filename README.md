@@ -103,7 +103,7 @@ Data is not included in this repository for privacy reasons. The expected data s
         └── *.edf               # EEG recordings (157 files)
 ```
 
-The CSV should contain columns: `pid`, `outcome` (1=failure, 2=success), `ASM`, `eeg_report`, etc.
+The CSV should contain columns: `pid`, `outcome` (1 = success, 2 = failure; mapped to 1/0 by `shared/cohort.py`), `ASM`, `eeg_report`, etc.
 
 ## Running Experiments
 

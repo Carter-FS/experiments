@@ -10,6 +10,7 @@ import torch.nn as nn
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from exp4_baseline.config import CLINICAL_DIM
 from exp2_fusion.models.eeg_encoders import get_eeg_encoder
 from exp2_fusion.models.eeg_transformer import EEGWindowTransformer
 from exp2_fusion.models.aggregators import get_aggregator
@@ -166,7 +167,7 @@ class ClinicalEEGFusionv2(nn.Module):
 
     def __init__(
         self,
-        clinical_dim=19,
+        clinical_dim=CLINICAL_DIM,
         smiles_dim=768,
         hidden_dim=64,
         num_classes=2,
@@ -222,7 +223,7 @@ class QuadMLPv2(nn.Module):
 
     def __init__(
         self,
-        clinical_dim=19,
+        clinical_dim=CLINICAL_DIM,
         text_dim=768,
         smiles_dim=768,
         hidden_dim=64,
@@ -300,7 +301,7 @@ def test_models():
             smiles_dim=768, eeg_embed_dim=128,
             aggregator_type=agg,
         )
-        clinical = torch.randn(batch_size, 19)
+        clinical = torch.randn(batch_size, CLINICAL_DIM)
         out = model(clinical, smiles, eeg, mask)
         print(f"ClinicalEEGFusionv2: {out.shape}, params={sum(p.numel() for p in model.parameters()):,}")
 
@@ -309,7 +310,7 @@ def test_models():
             smiles_dim=768, eeg_embed_dim=128,
             aggregator_type=agg,
         )
-        clinical = torch.randn(batch_size, 19)
+        clinical = torch.randn(batch_size, CLINICAL_DIM)
         out = model(clinical, text, eeg, mask, smiles)
         print(f"QuadMLPv2: {out.shape}, params={sum(p.numel() for p in model.parameters()):,}")
 

@@ -33,8 +33,16 @@ ASM_NAME_MAPPING: dict[str, str] = {
     "CZP": "Clonazepam",
 }
 
-# Raw outcome 1 (failure) -> 0, 2 (success) -> 1.
-OUTCOME_MAPPING: dict[int, int] = {1: 0, 2: 1}
+# Raw outcome 1 (success) -> 1, 2 (failure) -> 0.
+# Source: the data dictionary shipped with the cohort
+# (List_Missing_clinical_factors_07Nov2025.xlsx, sheet ASM_regimen, field
+# outcome_12m: "1 = success, 2 = failure"). Success = seizure-free for the first
+# 12 months while still on the regimen; failure = not seizure-free, or another
+# ASM switched to or added within 12 months. Until 2026-09-28 this map was
+# inverted ({1: 0, 2: 1}); see docs/analysis_plan_clean_rerun_exp18.md, B.1.
+# This is the ONLY place the raw coding may be mapped
+# (shared/tests/test_outcome_polarity.py enforces that).
+OUTCOME_MAPPING: dict[int, int] = {1: 1, 2: 0}
 
 # Columns whose non-blankness ranks duplicate rows (fuller row wins).
 KEEP_RULE_COLS: tuple[str, ...] = (

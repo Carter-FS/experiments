@@ -118,12 +118,25 @@ class ClinicalFeaturePreprocessor:
     It handles:
     - Mode imputation for binary/categorical features
     - Age binning into groups (Hakeem et al. 2022)
-    - Binary encoding for categorical features (normal vs abnormal)
+    - One-hot encoding of the 3-level categorical features (1 = normal,
+      2 = non-epileptiform abnormality, 3 = epileptiform); before
+      2026-09-28 these were collapsed to normal vs abnormal (analysis plan B.3)
+
+    ``drop`` removes binary features, e.g. the cross-cohort set that is
+    constant in HEP1 (shared.hep_cohort.CROSS_COHORT_DROP, plan B.4).
+    Output columns: kept binary features, 4 age bins, then lesion 1/2/3 and
+    eeg_cat 1/2/3.
     """
 
-    def __init__(self):
+    CATEGORY_LEVELS = (1.0, 2.0, 3.0)
+
+    def __init__(self, drop: tuple[str, ...] = ()):
+        unknown = set(drop) - set(CLINICAL_CONFIG["binary_features"])
+        if unknown:
+            raise ValueError(f"can only drop binary features, got {sorted(unknown)}")
+        self.drop = tuple(drop)
         self.numeric_features = CLINICAL_CONFIG["numeric_features"]
-        self.binary_features = CLINICAL_CONFIG["binary_features"]
+        self.binary_features = [c for c in CLINICAL_CONFIG["binary_features"] if c not in self.drop]
         self.categorical_features = CLINICAL_CONFIG["categorical_features"]
 
         # Fitted parameters (computed on training set only)
@@ -132,6 +145,18 @@ class ClinicalFeaturePreprocessor:
         self.categorical_modes: Optional[Dict[str, float]] = None
 
         self._fitted = False
+
+    @classmethod
+    def n_features(cls, drop: tuple[str, ...] = ()) -> int:
+        """Output width: kept binary features + age bins + one-hot categories."""
+        n_binary = len([c for c in CLINICAL_CONFIG["binary_features"] if c not in drop])
+        n_age = len(AGE_BINS) - 1
+        return n_binary + n_age * len(CLINICAL_CONFIG["numeric_features"]) + \
+            len(cls.CATEGORY_LEVELS) * len(CLINICAL_CONFIG["categorical_features"])
+
+    @property
+    def output_dim(self) -> int:
+        return self.n_features(self.drop)
 
     def fit(self, df: pd.DataFrame) -> "ClinicalFeaturePreprocessor":
         """Fit preprocessor on training data only.
@@ -179,7 +204,7 @@ class ClinicalFeaturePreprocessor:
 
         features = []
 
-        # Process binary features (13 features)
+        # Process binary features (13 minus any dropped)
         for col in self.binary_features:
             col_data = pd.to_numeric(df[col], errors="coerce")
             # Impute missing with mode
@@ -195,17 +220,18 @@ class ClinicalFeaturePreprocessor:
                 bin_col = ((col_data >= AGE_BINS[i]) & (col_data < AGE_BINS[i + 1])).astype(float)
                 features.append(bin_col.values.reshape(-1, 1))
 
-        # Process categorical features as binary presence (2 features total)
-        # lesion: 1=normal->0, 2/3=abnormal->1
-        # eeg_cat: 1=normal->0, 2/3=abnormal->1
+        # Categorical features one-hot over levels 1/2/3 (3 columns each).
+        # A value outside those levels is treated as missing (mode-imputed).
         for col in self.categorical_features:
             col_data = pd.to_numeric(df[col], errors="coerce")
+            col_data = col_data.where(col_data.isin(self.CATEGORY_LEVELS))
             col_data = col_data.fillna(self.categorical_modes[col])
-            binary = (col_data > 1.0).astype(float)
-            features.append(binary.values.reshape(-1, 1))
+            for level in self.CATEGORY_LEVELS:
+                features.append((col_data == level).astype(float).values.reshape(-1, 1))
 
         # Concatenate all features
         feature_matrix = np.hstack(features).astype(np.float32)
+        assert feature_matrix.shape[1] == self.output_dim, feature_matrix.shape
 
         return feature_matrix
 

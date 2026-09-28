@@ -133,7 +133,7 @@ def load_and_clean_data(filepath: str = None) -> Tuple[pd.DataFrame, Dict[str, L
         # Convert to numeric first (handles string '1', '2')
         df["outcome"] = pd.to_numeric(df["outcome"], errors="coerce")
 
-        # Filter to valid outcomes (1=failure, 2=success)
+        # Filter to valid outcomes (raw 1 = success, 2 = failure)
         valid_outcomes = df["outcome"].isin([1, 2, 1.0, 2.0])
         n_invalid_outcome = (~valid_outcomes).sum()
         if n_invalid_outcome > 0:
