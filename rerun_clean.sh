@@ -72,11 +72,21 @@ exp18 () {
     # ${extra[@]+...}: expanding an empty array trips `set -u` on bash < 4.4.
     "$PY" -m exp18_mixed_cohort.run_experiments "$@" ${EXP18_SEL[@]+"${EXP18_SEL[@]}"} ${extra[@]+"${extra[@]}"}
 }
+exp19 () {
+    local extra=()
+    [[ "${FORCE:-0}" == 1 ]] && extra+=(--force)
+    [[ "$PROTOCOL" == refit ]] && extra+=(--refit-folds 5)
+    "$PY" -m exp19_serialised_clinical.run_experiments "$@" ${extra[@]+"${extra[@]}"}
+}
 export ASM_EXPERIMENTS_DIR="${ASM_EXPERIMENTS_DIR:-$REPO_DIR}"
 
 # exp9 and exp11 run one item per ablation / base x aggregator: the refit
 # protocol costs about six times the inner split and the whole experiments
 # would exceed the 16 h limit.
+EXP19_TEXT_CONFIGS=(A B B-imp E E-imp D D-tok D-split)
+EXP19_TABULAR_CONFIGS=(T4 T5a T6a T4-full T5a-full)
+EXP18_TEXT_CONFIGS=(S19A_pubmedbert S19D_pubmedbert S19A_clinicalbert S19D_clinicalbert
+                    S19A_llama31_8b S19D_llama31_8b LF_T5a-full LF_T6a)
 EXP9_ABLATIONS=(baseline_simplecnn_transformer encoder_eegnet encoder_labram encoder_eeg2vec encoder_frozen
                 aggregator_attention aggregator_maxpool aggregator_meanmax aggregator_lstm
                 aggregator_depth_0 aggregator_depth_1 aggregator_depth_4 embed_dim_64 embed_dim_128)
@@ -88,10 +98,16 @@ TASKS=(
     "${EXP9_ABLATIONS[@]/#/exp9_}"
     hep_forward hep_eeg hep_reverse hep_focal hep_reduced reve
     exp18_Exp4a exp18_Exp5a exp18_Exp5b exp18_Exp5c exp18_Exp6b exp18_Exp7a exp18_noRMH
+    # exp19 (Addendum A/B.7): tabular comparators, then the serialised-text
+    # configurations per encoder; needs outputs/exp19_embeddings (built on the
+    # laptop with exp19_serialised_clinical.embed and copied up).
+    exp19_tabular exp19_pubmedbert exp19_clinicalbert exp19_llama31_8b exp19_qwen3_embed_8b
+    "${EXP18_TEXT_CONFIGS[@]/#/exp18_}"
 )
 if [[ "$PROTOCOL" == refit ]]; then
     TASKS+=(exp4_decomp hep_forward_h12 hep_eeg_h12 hep_reverse_h12
-            exp18_h12_Exp4a exp18_h12_Exp5a exp18_h12_Exp5b exp18_h12_Exp5c exp18_h12_Exp6b exp18_h12_Exp7a)
+            exp18_h12_Exp4a exp18_h12_Exp5a exp18_h12_Exp5b exp18_h12_Exp5c exp18_h12_Exp6b exp18_h12_Exp7a
+            "${EXP18_TEXT_CONFIGS[@]/#/exp18_h12_}")
 fi
 
 # Both balance modes, as in the legacy rerun. CV is set per item (seed).
@@ -163,6 +179,8 @@ run_task () {
         hep_reverse_h12) (cd "$THESIS" && "$PY" analysis/hep_reverse_validation.py "${CV[@]}" "${H12[@]}") ;;
         reve) (cd "$THESIS" && "$PY" analysis/reve_standalone.py "${CV[@]}" \
                    --log-predictions "$REPO_DIR/$OUT/exp9_predictions") ;;
+        exp19_tabular) exp19 --configs "${EXP19_TABULAR_CONFIGS[@]}" --seeds "$seed" ;;
+        exp19_*) exp19 --configs "${EXP19_TEXT_CONFIGS[@]}" --encoders "${task#exp19_}" --seeds "$seed" ;;
         exp18_noRMH) exp18 --config Exp4a Exp5a Exp5b --exclude-rmh --seeds "$seed" ;;
         exp18_Exp5c|exp18_Exp6b|exp18_Exp7a|exp18_h12_Exp5c|exp18_h12_Exp6b|exp18_h12_Exp7a)
             if [[ "$EXP18_EEG_SEEDS" != *" $seed "* ]]; then
@@ -242,6 +260,8 @@ preflight () {
     fi
     check "thesisStandalone clone" "[[ -f '$THESIS/analysis/hep_external_validation.py' ]]"
     check "expected-files manifest" "[[ -f clean_rerun_expected.txt ]]"
+    check "exp19 embedding stores (copied from the laptop)" \
+        "'$PY' -c 'from exp19_serialised_clinical.texts import all_texts, load_frames; from exp19_serialised_clinical.run_experiments import lookup; [lookup(e, p, all_texts(load_frames())) for e, p in [(\"pubmedbert\",\"mean\"),(\"clinicalbert\",\"mean\"),(\"llama31_8b\",\"mean\"),(\"llama31_8b\",\"last\"),(\"qwen3_embed_8b\",\"last\")]]'"
     echo "versions: bash ${BASH_VERSION}; $("$PY" -c 'import sklearn, pandas, torch; print(f"sklearn {sklearn.__version__}, pandas {pandas.__version__}, torch {torch.__version__}")' 2>/dev/null)"
     echo "experiments $(git rev-parse --short HEAD)  thesisStandalone $(git -C "$THESIS" rev-parse --short HEAD 2>/dev/null)"
     echo "(compare both commits with the laptop before submitting)"

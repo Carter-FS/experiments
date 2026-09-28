@@ -583,8 +583,10 @@ clarifications and corrections are made before any run under Addendum B:
   when the Holm-adjusted two one-sided tests give p < 0.05, otherwise
   superiority when the Holm-adjusted two-sided Nadeau-Bengio test gives
   p < 0.05, otherwise inconclusive. Zero-shot scores are written to
-  `zeroshot_fp32_<cohort>.csv`; exp19 and the zero-shot baseline run on the
-  laptop, not in the M3 array.
+  `zeroshot_fp32_<cohort>.csv`. The embeddings and the zero-shot baseline run
+  on the laptop; exp19's models and exp18's text configurations run in the M3
+  array from the copied embedding stores (a partial laptop run was stopped for
+  load and its files set aside unused).
 - **B.8 details.** Within each bootstrap replicate a seed's pooled estimate
   is the random-effects re-pool of the resampled fold estimates with that
   seed's fold variances held fixed. exp18 keeps the Section 6 per-seed DeLong
