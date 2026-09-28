@@ -142,12 +142,54 @@ def _harmonise_hep_clinical(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def load_hep() -> pd.DataFrame:
+HEP_OUTCOMES = ("provided", "harmonised12")
+
+
+def harmonise_hep_outcome(df: pd.DataFrame) -> pd.DataFrame:
+    """12-month harmonised HEP1 label (analysis plan B.5, sensitivity only).
+
+    HEP1's provided label is 1 only for patients still on the first regimen
+    and seizure-free. A patient whose regimen ended (end_date) at least 12
+    months after it started completed 12 months on it, a success under the
+    Melbourne definition, so those outcome-0 rows are recoded to 1. Rows whose
+    end_date is on or before start_date are dropped. Seizure-free patients have
+    no end date, so no censoring can be applied. ``df.attrs`` records counts.
+    """
+    start = pd.to_datetime(df["start_date"], errors="coerce")
+    end = pd.to_datetime(df["end_date"], errors="coerce")
+    days = (end - start).dt.days
+    bad = days.notna() & (days <= 0)
+    late = (df["outcome"] == 0) & days.notna() & (days >= 365.25)
+    out = df.loc[~bad].copy()
+    out.loc[late[~bad], "outcome"] = 1
+    out.attrs = {"n_recoded": int(late[~bad].sum()), "n_dropped_nonpositive": int(bad.sum())}
+    return out
+
+
+def add_hep_outcome_arg(parser) -> None:
+    parser.add_argument(
+        "--hep-outcome", choices=HEP_OUTCOMES, default="provided", dest="hep_outcome",
+        help="HEP1 label: as provided (primary) or the 12-month harmonised sensitivity "
+             "label (analysis plan B.5; outputs tagged _h12).",
+    )
+
+
+def hep_outcome_tag(hep_outcome: str) -> str:
+    return "_h12" if hep_outcome == "harmonised12" else ""
+
+
+def load_hep(outcome: str = "provided") -> pd.DataFrame:
+    if outcome not in HEP_OUTCOMES:
+        raise ValueError(f"unknown HEP1 outcome {outcome!r}; expected one of {HEP_OUTCOMES}")
     df = pd.read_csv(HEP_CSV)
     df = df.rename(columns={"patient": "pid", "age": "age_init"})
     df["outcome"] = pd.to_numeric(df["outcome"], errors="coerce")
     df = df[df["outcome"].isin([0, 1])].copy()
     df["outcome"] = df["outcome"].astype(int)
+    if outcome == "harmonised12":
+        df = harmonise_hep_outcome(df)
+        sys.stderr.write(f"HEP1 harmonised12: {df.attrs['n_recoded']} recoded to 1, "
+                         f"{df.attrs['n_dropped_nonpositive']} dropped (non-positive duration)\n")
     df["ASM"] = df["ASM"].astype(str).str.strip().str.upper().map(
         lambda a: HEP_ASM_TO_ALFRED_ABBREV.get(a, a)
     )

@@ -137,28 +137,40 @@ def train_fold(
     val_labels: torch.Tensor,
     device: torch.device,
     model_factory=None,
+    trace: dict | None = None,
+    fixed_epochs: int | None = None,
+    val_cohorts=None,
 ) -> nn.Module:
     """Train a model with early stopping on a held-out val split.
 
     ``model_factory`` (a no-argument callable returning an nn.Module) replaces
-    build_model for "LF:" late-fusion configurations.
+    build_model for "LF:" late-fusion configurations; otherwise the clinical
+    input width is taken from ``train_tensors[0]``.
+
+    Refit protocol (analysis plan B.2): ``trace`` collects the validation
+    probabilities after every epoch; ``fixed_epochs`` trains exactly that
+    many epochs with no validation set (``val_tensors`` None) and returns the
+    final model. ``val_cohorts`` makes the early-stopping criterion the
+    cohort-stratified AUC (exp18 mixed arms, plan B.6).
     """
-    model = model_factory().to(device) if model_factory is not None else build_model(config, device)
+    model = (model_factory().to(device) if model_factory is not None
+             else build_model(config, device, clinical_dim=train_tensors[0].shape[1]))
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
     class_counts = np.bincount(train_labels.numpy())
     cw = torch.tensor(1.0 / np.maximum(class_counts, 1), dtype=torch.float32)
     cw = cw / cw.sum()
     criterion = nn.CrossEntropyLoss(weight=cw.to(device))
     train_tensors = [t.to(device) for t in train_tensors]
-    val_tensors = [t.to(device) for t in val_tensors]
+    if val_tensors is not None:
+        val_tensors = [t.to(device) for t in val_tensors]
+        val_labels = val_labels.to(device)
     train_labels = train_labels.to(device)
-    val_labels = val_labels.to(device)
     train_ds = TensorDataset(*train_tensors, train_labels)
     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
     best_val_auc = 0.0
     best_state = None
     patience_counter = 0
-    for epoch in range(N_EPOCHS_MAX):
+    for epoch in range(N_EPOCHS_MAX if fixed_epochs is None else fixed_epochs):
         model.train()
         for batch in train_loader:
             *features, labels = batch
@@ -167,15 +179,16 @@ def train_fold(
             loss = criterion(logits, labels)
             loss.backward()
             optimizer.step()
+        if fixed_epochs is not None:
+            continue
         # Validation
         model.eval()
         with torch.no_grad():
             val_logits = forward_pass(model, val_tensors, config)
             val_probs = torch.softmax(val_logits, dim=1)[:, 1].cpu().numpy()
-        if len(np.unique(val_labels.cpu().numpy())) > 1:
-            val_auc = roc_auc_score(val_labels.cpu().numpy(), val_probs)
-        else:
-            val_auc = 0.5
+        if trace is not None:
+            trace.setdefault("val_probs", []).append(val_probs.astype(float))
+        val_auc = _val_auc(val_labels.cpu().numpy(), val_probs, val_cohorts)
         if val_auc > best_val_auc:
             best_val_auc = val_auc
             best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
@@ -184,9 +197,19 @@ def train_fold(
             patience_counter += 1
         if patience_counter >= EARLY_STOP_PATIENCE:
             break
-    if best_state is not None:
+    if fixed_epochs is None and best_state is not None:
         model.load_state_dict(best_state)
     return model
+
+
+def _val_auc(y, probs, cohorts=None) -> float:
+    """Early-stopping criterion: AUC, or the cohort-stratified AUC when
+    ``cohorts`` is given; 0.5 when undefined."""
+    if cohorts is not None:
+        from shared.stats_util import cohort_stratified_auc
+        v = cohort_stratified_auc(y, probs, cohorts)
+        return 0.5 if not np.isfinite(v) else v
+    return roc_auc_score(y, probs) if len(np.unique(y)) > 1 else 0.5
 
 
 def predict(model: nn.Module, tensors: list[torch.Tensor], config: str, device: torch.device) -> np.ndarray:
@@ -198,15 +221,21 @@ def predict(model: nn.Module, tensors: list[torch.Tensor], config: str, device: 
     return probs
 
 
-def compute_metrics(y_true: np.ndarray, y_prob: np.ndarray) -> dict:
+def compute_metrics(y_true: np.ndarray, y_prob: np.ndarray, threshold: float | None = None) -> dict:
+    """AUC plus sensitivity/specificity at ``threshold`` (a transported one,
+    chosen on the training cohort), or at the scored cohort's own Youden point
+    when ``threshold`` is None (an oracle, labelled ``_ownthr`` in clean runs)."""
     if len(np.unique(y_true)) < 2 or len(y_true) < 2:
         return {"auc": float("nan"), "sens": float("nan"), "spec": float("nan"),
                 "bal_acc": float("nan"), "n": int(len(y_true)),
                 "n_responder": int(y_true.sum()) if len(y_true) else 0}
     auc = float(roc_auc_score(y_true, y_prob))
-    fpr, tpr, thresholds = roc_curve(y_true, y_prob)
-    j_idx = int(np.argmax(tpr - fpr))
-    thr = float(thresholds[j_idx])
+    if threshold is None:
+        fpr, tpr, thresholds = roc_curve(y_true, y_prob)
+        j_idx = int(np.argmax(tpr - fpr))
+        thr = float(thresholds[j_idx])
+    else:
+        thr = float(threshold)
     y_pred = (y_prob >= thr).astype(int)
     tp = int(((y_pred == 1) & (y_true == 1)).sum())
     tn = int(((y_pred == 0) & (y_true == 0)).sum())
@@ -294,8 +323,12 @@ def train_fold_eeg(
     train_labels: torch.Tensor,
     val_labels: torch.Tensor,
     device: torch.device,
+    trace: dict | None = None,
+    fixed_epochs: int | None = None,
+    val_cohorts=None,
 ) -> nn.Module:
-    model = build_model(config, device)
+    """EEG counterpart of train_fold (same refit-protocol arguments)."""
+    model = build_model(config, device, clinical_dim=train_modalities["clinical"].shape[1])
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
     class_counts = np.bincount(train_labels.numpy())
     cw = torch.tensor(1.0 / np.maximum(class_counts, 1), dtype=torch.float32)
@@ -305,7 +338,7 @@ def train_fold_eeg(
     best_val_auc = 0.0
     best_state = None
     patience_counter = 0
-    for epoch in range(EEG_N_EPOCHS_MAX):
+    for epoch in range(EEG_N_EPOCHS_MAX if fixed_epochs is None else fixed_epochs):
         model.train()
         for batch_mod, batch_labels in iterate_minibatches(train_modalities, train_labels, EEG_BATCH_SIZE, True, rng):
             batch_mod = to_device(batch_mod, device)
@@ -316,13 +349,14 @@ def train_fold_eeg(
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
+        if fixed_epochs is not None:
+            continue
         # Validation
         model.eval()
         val_probs = predict_eeg(model, val_modalities, config, device)
-        if len(np.unique(val_labels.numpy())) > 1:
-            val_auc = roc_auc_score(val_labels.numpy(), val_probs)
-        else:
-            val_auc = 0.5
+        if trace is not None:
+            trace.setdefault("val_probs", []).append(np.asarray(val_probs, dtype=float))
+        val_auc = _val_auc(val_labels.numpy(), val_probs, val_cohorts)
         if val_auc > best_val_auc:
             best_val_auc = val_auc
             best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
@@ -331,7 +365,7 @@ def train_fold_eeg(
             patience_counter += 1
         if patience_counter >= EEG_EARLY_STOP_PATIENCE:
             break
-    if best_state is not None:
+    if fixed_epochs is None and best_state is not None:
         model.load_state_dict(best_state)
     return model
 
