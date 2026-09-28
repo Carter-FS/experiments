@@ -115,12 +115,12 @@ def load_pooled(config: str, exclude_rmh: bool = False, exclude_hep_pids=(),
 
     if config in LF_INPUTS:
         # Fold-independent exp19 text embeddings (standardised per arm at training time).
-        from exp19_serialised_clinical.run_experiments import lookup
+        from exp19_serialised_clinical.run_experiments import embed_variant, lookup
         from exp19_serialised_clinical.texts import texts
         for name in LF_INPUTS[config]:
             if name.startswith("emb:"):
                 _, variant, encoder = name.split(":")
-                modalities[name] = lookup(encoder, "mean", texts(df, variant))
+                modalities[name] = embed_variant(encoder, "mean", df, variant)
             elif name.startswith("rep:"):
                 modalities[name] = lookup(name[4:], "mean", texts(df, "rep"))
 

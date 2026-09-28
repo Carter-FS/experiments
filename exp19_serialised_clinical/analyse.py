@@ -3,13 +3,18 @@
 Reads outputs/exp19_predictions/ (and the embedding stores for the cohort
 probe) and writes, next to the predictions:
 
+Every file is written per selection protocol: exp19_<name>_rf5.csv for the
+refit protocol (primary, analysis plan B.2), exp19_<name>.csv for the
+inner-split protocol (pre-registered); --protocol chooses.
+
     exp19_per_seed.csv   per (tag, estimator, seed): Melbourne pooled out-of-fold AUC (DeLong CI), fold-mean
                          AUC, HEP1 external AUC overall / complete-case / seen-drug
     exp19_summary.csv    means over seeds, plus HEP1 AUC of the seed-averaged ensemble with a bootstrap CI
-    exp19_contrasts.csv  the primary contrast (B vs T5a-full, MLP; Holm over three encoders; internal
-                         Nadeau-Bengio CI read against the margin; external paired bootstrap) and the
-                         descriptive contrasts
-    exp19_zeroshot.csv   zero-shot AUCs
+    exp19_contrasts.csv  the primary contrast (B vs T5a-full, MLP; three encoders; internal
+                         Nadeau-Bengio two one-sided tests against the +/-0.05 margin with Holm, i.e.
+                         the 90% CI, and the 95% CI for superiority (plan B.7); external paired
+                         bootstrap) and the descriptive contrasts
+    exp19_zeroshot.csv   zero-shot AUCs (float32 answer logits, plan B.7)
     exp19_probe.csv      fold-internal cohort probe (Melbourne vs HEP1) per representation
 
     python -m exp19_serialised_clinical.analyse
@@ -35,10 +40,11 @@ from shared.serialise_clinical import fit_fills
 from shared.stats_util import delong_ci, delong_test
 from exp18_mixed_cohort.analyse import holm
 
-from .config import ENCODERS, MARGIN, POOLINGS, PRED_DIR
+from .config import ENCODERS, MARGIN, POOLINGS, PRED_DIR, TEXT_COHORT_CONFIGS
 from .texts import complete_case_mask, load_frames, seen_drug_mask, texts
 
-OOF_RE = re.compile(r"predictions_oof_exp19_(?P<tag>.+)_(?P<est>mlp|pca32|lr)_sp-multilabel_iv20_s(?P<seed>\d+)\.json$")
+OOF_RE = re.compile(r"predictions_oof_exp19_(?P<tag>.+)_(?P<est>mlp|pca32|lr)_sp-multilabel_(?P<proto>iv20|rf\d+)"
+                    r"_s(?P<seed>\d+)\.json$")
 N_BOOT = 2000
 PRIMARY_ENCODERS = ("pubmedbert", "clinicalbert", "llama31_8b")
 
@@ -48,15 +54,18 @@ def _auc(y, p) -> float:
     return float(roc_auc_score(y, p)) if len(np.unique(y)) > 1 else np.nan
 
 
-def load(pred_dir: Path):
+def load(pred_dir: Path, protocol: str = "rf5"):
+    """Out-of-fold payloads and HEP1 ensembles of one selection protocol
+    ("iv20" inner split, "rf5" refit)."""
     oof, ext = {}, {}
+    hep_tag = "" if protocol == "iv20" else f"_{protocol}"
     for f in sorted(pred_dir.glob("predictions_oof_exp19_*.json")):
         m = OOF_RE.search(f.name)
-        if not m:
+        if not m or m["proto"] != protocol:
             continue
         key = (m["tag"], m["est"], int(m["seed"]))
         oof[key] = json.loads(f.read_text())
-        hep = pred_dir / f"hep_external_exp19_{m['tag']}_{m['est']}_s{m['seed']}.csv"
+        hep = pred_dir / f"hep_external_exp19_{m['tag']}_{m['est']}{hep_tag}_s{m['seed']}.csv"
         if hep.exists():
             ext[key] = pd.read_csv(hep, dtype={"pid": str})
     return oof, ext
@@ -87,7 +96,7 @@ def _subset(h: pd.DataFrame, masks, scope, group):
 
 
 def scope_of(tag: str) -> str:
-    return "text" if tag.split("_")[0] in ("D", "D-split", "T6a") else "full"
+    return "text" if tag.split("_")[0] in TEXT_COHORT_CONFIGS else "full"
 
 
 def per_seed(oof, ext, masks) -> pd.DataFrame:
@@ -147,13 +156,29 @@ def nb_ci(d: np.ndarray, ratio: float, alpha: float = 0.05):
     return float(d.mean()), float(d.mean() - t_crit * se), float(d.mean() + t_crit * se), float(p)
 
 
-def verdict(lo: float, hi: float, margin: float = MARGIN) -> str:
-    if lo > 0:
-        return "text better"
-    if hi < 0:
-        return "tabular better"
-    if -margin < lo and hi < margin:
+def tost_p(d: np.ndarray, ratio: float, margin: float = MARGIN) -> float:
+    """Two one-sided Nadeau-Bengio tests of |difference| < margin: the larger
+    one-sided p (below alpha exactly when the 1 - 2 alpha CI lies inside the
+    margin)."""
+    d = d[~np.isnan(d)]
+    j = len(d)
+    se = np.sqrt((1 / j + ratio) * np.var(d, ddof=1))
+    if not se > 0:
+        return float("nan")
+    p_low = stats.t.sf((d.mean() + margin) / se, df=j - 1)    # H0: diff <= -margin
+    p_high = stats.t.cdf((d.mean() - margin) / se, df=j - 1)  # H0: diff >= +margin
+    return float(max(p_low, p_high))
+
+
+def verdict(lo95: float, hi95: float, p_tost_holm: float, margin: float = MARGIN) -> str:
+    """Equivalence first (Holm-adjusted TOST, i.e. the 90% CI inside the margin),
+    then superiority from the 95% CI (plan B.7)."""
+    if p_tost_holm < 0.05:
         return f"equivalent within +/-{margin}"
+    if lo95 > 0:
+        return "text better"
+    if hi95 < 0:
+        return "tabular better"
     return "inconclusive"
 
 
@@ -171,12 +196,14 @@ def contrast_row(oof, ext, masks, label, kind, a, b, est_a="mlp", est_b="mlp", s
             assert fa["pid"].tolist() == fb["pid"].tolist(), "folds differ between the paired tags"
             fold_d.append(_auc(fa["y_true"], fa["y_prob"]) - _auc(fb["y_true"], fb["y_prob"]))
             ratios.append(len(fa) / (len(da) - len(fa)))
-    mean, lo, hi, p = nb_ci(np.array(fold_d), float(np.mean(ratios)))
+    ratio = float(np.mean(ratios))
+    mean, lo, hi, p = nb_ci(np.array(fold_d), ratio)
+    _, lo90, hi90, _ = nb_ci(np.array(fold_d), ratio, alpha=0.10)
     row = {"kind": kind, "comparison": label, "a": f"{a}/{est_a}", "b": f"{b}/{est_b}", "n_seeds": len(seeds),
            "internal_diff": mean, "internal_ci_lo": lo, "internal_ci_hi": hi, "internal_nb_p": p,
+           "internal_ci90_lo": lo90, "internal_ci90_hi": hi90,
+           "internal_tost_p": tost_p(np.array(fold_d), ratio),
            "internal_delong_p_median": float(np.median(delong_p))}
-    if kind == "primary":
-        row["verdict"] = verdict(lo, hi)
     ea, eb = seed_averaged(ext, a, est_a), seed_averaged(ext, b, est_b)
     if ea is not None and eb is not None:
         assert ea["pid"].tolist() == eb["pid"].tolist()
@@ -192,8 +219,11 @@ def contrasts(oof, ext, masks) -> pd.DataFrame:
     rows = [contrast_row(oof, ext, masks, "text clinical vs information-matched tabular (B vs T5a-full)",
                          "primary", f"B_{enc}_mean", "T5a-full") for enc in PRIMARY_ENCODERS]
     rows = [r for r in rows if r]
-    for row, p_adj in zip(rows, holm([r["internal_nb_p"] for r in rows])):
+    for row, p_adj, t_adj in zip(rows, holm([r["internal_nb_p"] for r in rows]),
+                                 holm([r["internal_tost_p"] for r in rows])):
         row["internal_nb_p_holm"] = p_adj
+        row["internal_tost_p_holm"] = t_adj
+        row["verdict"] = verdict(row["internal_ci_lo"], row["internal_ci_hi"], t_adj)
     for enc, spec in ENCODERS.items():
         for pool in POOLINGS[spec["kind"]]:
             s = f"_{enc}_{pool}"
@@ -201,6 +231,7 @@ def contrasts(oof, ext, masks) -> pd.DataFrame:
                                 ("imputed text vs paper tabular (B-imp vs T5a)", f"B-imp{s}", "T5a"),
                                 ("text vs information-matched tabular, no drug (E vs T4-full)", f"E{s}", "T4-full"),
                                 ("imputed text vs paper tabular, no drug (E-imp vs T4)", f"E-imp{s}", "T4"),
+                                ("segment-balanced vs token mean (D vs D-tok)", f"D{s}", f"D-tok{s}"),
                                 ("one document vs separate branches (D vs D-split)", f"D{s}", f"D-split{s}"),
                                 ("split text vs tabular with report (D-split vs T6a)", f"D-split{s}", "T6a")]:
                 rows.append(contrast_row(oof, ext, masks, label, "descriptive", a, b))
@@ -208,7 +239,7 @@ def contrasts(oof, ext, masks) -> pd.DataFrame:
                 rows.append(contrast_row(oof, ext, masks, f"B vs T5a-full with {est}", "descriptive",
                                          f"B{s}", "T5a-full", est, est))
         if spec["kind"] == "decoder":
-            for cfg in ("A", "B", "B-imp", "E", "E-imp", "D", "D-split"):
+            for cfg in ("A", "B", "B-imp", "E", "E-imp", "D", "D-tok", "D-split"):
                 rows.append(contrast_row(oof, ext, masks, f"mean vs last-token pooling ({cfg})", "descriptive",
                                          f"{cfg}_{enc}_mean", f"{cfg}_{enc}_last"))
     return pd.DataFrame([r for r in rows if r])
@@ -217,7 +248,7 @@ def contrasts(oof, ext, masks) -> pd.DataFrame:
 def zero_shot(pred_dir: Path, masks) -> pd.DataFrame:
     rows = []
     for cohort in ("MEL", "HEP"):
-        f = pred_dir / f"zeroshot_{cohort}.csv"
+        f = pred_dir / f"zeroshot_fp32_{cohort}.csv"
         if not f.exists():
             continue
         z = pd.read_csv(f, dtype={"pid": str})
@@ -263,10 +294,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--pred-dir", type=Path, default=PRED_DIR)
     parser.add_argument("--no-probe", action="store_true")
+    parser.add_argument("--protocol", default="rf5", help='"rf5" refit (primary) or "iv20" inner split')
     args = parser.parse_args()
     frames = load_frames()
     masks = subgroup_masks(frames)
-    oof, ext = load(args.pred_dir)
+    oof, ext = load(args.pred_dir, args.protocol)
+    tag = "" if args.protocol == "iv20" else f"_{args.protocol}"
     if not oof:
         raise SystemExit(f"no exp19 prediction files in {args.pred_dir}")
     seeds = per_seed(oof, ext, masks)
@@ -284,10 +317,10 @@ def main() -> None:
     summary = summary.merge(pd.DataFrame(ens), on=["tag", "estimator"], how="left")
     comps = contrasts(oof, ext, masks)
     zs = zero_shot(args.pred_dir, masks)
-    seeds.to_csv(args.pred_dir / "exp19_per_seed.csv", index=False)
-    summary.to_csv(args.pred_dir / "exp19_summary.csv", index=False)
-    comps.to_csv(args.pred_dir / "exp19_contrasts.csv", index=False)
-    zs.to_csv(args.pred_dir / "exp19_zeroshot.csv", index=False)
+    seeds.to_csv(args.pred_dir / f"exp19_per_seed{tag}.csv", index=False)
+    summary.to_csv(args.pred_dir / f"exp19_summary{tag}.csv", index=False)
+    comps.to_csv(args.pred_dir / f"exp19_contrasts{tag}.csv", index=False)
+    zs.to_csv(args.pred_dir / "exp19_zeroshot_fp32.csv", index=False)
     if not args.no_probe:
         cohort_probe(frames).to_csv(args.pred_dir / "exp19_probe.csv", index=False)
     print(summary[summary["estimator"] == "mlp"][["tag", "n", "auc_mean", "auc_sd", "hep_ensemble_auc"]]
@@ -295,9 +328,10 @@ def main() -> None:
     prim = comps[comps["kind"] == "primary"] if len(comps) else comps
     if len(prim):
         print("\nPrimary contrast (B vs T5a-full, MLP):")
-        print(prim[["a", "internal_diff", "internal_ci_lo", "internal_ci_hi", "internal_nb_p_holm", "verdict",
+        print(prim[["a", "internal_diff", "internal_ci90_lo", "internal_ci90_hi", "internal_tost_p_holm", "verdict",
                     "hep_all_diff", "hep_all_ci_lo", "hep_all_ci_hi"]].round(3).to_string(index=False))
-    print(f"\nwrote exp19_per_seed/summary/contrasts/zeroshot{'' if args.no_probe else '/probe'}.csv to {args.pred_dir}")
+    print(f"\nwrote exp19_per_seed/summary/contrasts{tag}, zeroshot_fp32{'' if args.no_probe else ', probe'}"
+          f" to {args.pred_dir}")
 
 
 if __name__ == "__main__":

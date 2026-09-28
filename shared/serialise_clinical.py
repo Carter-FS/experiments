@@ -81,8 +81,12 @@ def asm_code(value) -> str | None:
     return s if s in ASM_NAMES else None
 
 
-def patient_to_text(row, include_asm: bool = True) -> str:
-    """The template paragraph for one patient (a mapping of harmonised features)."""
+def patient_to_text(row, include_asm: bool = True, omit: tuple[str, ...] = ()) -> str:
+    """The template paragraph for one patient (a mapping of harmonised features).
+
+    ``omit`` leaves out the seizure-type sentence ("focal") and any history
+    items by column, e.g. the features constant in HEP1 when a model sees both
+    cohorts (analysis plan B.4)."""
     sex = _code(row.get("sex"))
     pronoun = {1.0: "Her", 0.0: "His"}.get(sex, "Their")
     parts = [
@@ -95,10 +99,13 @@ def patient_to_text(row, include_asm: bool = True) -> str:
     parts.append("Before the commencement of any antiseizure medication treatment, "
                  + {True: "the number of seizures was greater than five.",
                     False: "the number of seizures was five or fewer."}.get(sz, "the number of seizures was unknown."))
-    focal = _flag(row.get("focal"))
-    parts.append("The seizure type is " + {True: "focal.", False: "generalised."}.get(focal, "unknown."))
+    if "focal" not in omit:
+        focal = _flag(row.get("focal"))
+        parts.append("The seizure type is " + {True: "focal.", False: "generalised."}.get(focal, "unknown."))
     items = []
     for col, absent, present, unknown in HISTORY:
+        if col in omit:
+            continue
         flag = _flag(row.get(col))
         items.append(unknown if flag is None else (present if flag else absent))
     parts.append("The patient has " + ", ".join(items[:-1]) + ", and " + items[-1] + ".")
@@ -174,10 +181,10 @@ def impute(df: pd.DataFrame, fills: dict) -> pd.DataFrame:
     return out
 
 
-def serialise_frame(df: pd.DataFrame, include_asm: bool = True) -> list[str]:
+def serialise_frame(df: pd.DataFrame, include_asm: bool = True, omit: tuple[str, ...] = ()) -> list[str]:
     """Validated texts for every row of a harmonised cohort frame, in row order."""
     validate(df)
-    return [patient_to_text(r, include_asm=include_asm) for r in df.to_dict("records")]
+    return [patient_to_text(r, include_asm=include_asm, omit=omit) for r in df.to_dict("records")]
 
 
 def text_key(text: str) -> str:

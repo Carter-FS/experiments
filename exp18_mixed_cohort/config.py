@@ -13,13 +13,15 @@ CONFIGS_NON_EEG = ("Exp4a", "Exp5a", "Exp5b")
 CONFIGS_EEG = ("Exp5c", "Exp6b", "Exp7a")
 
 # exp19 additions (analysis plan Addendum A.1): serialised-text configurations
-# A (v1) and D (v2) per encoder, and same-class tabular comparators, all
+# A and D per encoder, and same-class tabular comparators, all
 # shared.portable_models.LateFusionMLP. Input names follow exp19's CONFIGS;
-# "emb:<variant>:<encoder>" is looked up in the exp19 embedding store.
+# "emb:<variant>:<encoder>" is looked up in the exp19 embedding store. The
+# text omits the facts constant in HEP1 (v1xc, plan B.4) and D is the
+# segment-balanced mean of paragraph and report (plan B.7).
 LF_INPUTS = {}
 for _enc in ("pubmedbert", "clinicalbert", "llama31_8b"):
-    LF_INPUTS[f"S19A_{_enc}"] = (f"emb:v1:{_enc}",)
-    LF_INPUTS[f"S19D_{_enc}"] = (f"emb:v2:{_enc}",)
+    LF_INPUTS[f"S19A_{_enc}"] = (f"emb:v1xc:{_enc}",)
+    LF_INPUTS[f"S19D_{_enc}"] = (f"emb:v1xc|rep:{_enc}",)
 LF_INPUTS["LF_T5a-full"] = ("clinical_full", "smiles")
 LF_INPUTS["LF_T6a"] = ("clinical", "rep:clinicalbert", "smiles")
 CONFIGS_LF = tuple(LF_INPUTS)
@@ -35,9 +37,14 @@ MODALITIES = {
     "Exp7a": ("text", "smiles", "eeg"),
 }
 # "text" restricts the pooled cohort to patients with a usable EEG report.
+def _needs_report(name: str) -> bool:
+    return name.startswith("rep:") or (name.startswith("emb:") and
+                                       bool({"v2", "rep"} & set(name.split(":")[1].split("|"))))
+
+
 for _cfg, _inputs in LF_INPUTS.items():
     MODALITIES[_cfg] = tuple(
-        (["text"] if any(":v2:" in n or n.startswith("rep:") for n in _inputs) else [])
+        (["text"] if any(_needs_report(n) for n in _inputs) else [])
         + (["smiles"] if "smiles" in _inputs else []))
 
 # Portable model per configuration (shared/portable_models.py). Exp6b uses the

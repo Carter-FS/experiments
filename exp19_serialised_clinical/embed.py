@@ -13,6 +13,7 @@ Reruns only embed texts missing from a store. outputs/ is gitignored.
 
     python -m exp19_serialised_clinical.embed --encoders pubmedbert clinicalbert
     python -m exp19_serialised_clinical.embed --encoders llama31_8b          # CPU, bfloat16
+    python -m exp19_serialised_clinical.embed --encoders qwen3_embed_8b      # CPU, bfloat16
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ from transformers import AutoModel, AutoTokenizer
 from shared.prediction_logger import run_provenance
 from shared.serialise_clinical import TEMPLATE_VERSION, text_key
 
-from .config import EMB_DIR, ENCODERS, POOLINGS, SEEDS
+from .config import EMB_DIR, ENCODERS, POOLINGS, QWEN_INSTRUCTION, SEEDS
 from .texts import all_texts, load_frames
 
 logger = logging.getLogger("exp19")
@@ -46,9 +47,12 @@ def load_tokenizer(encoder: str):
     return tok
 
 
+DECODER_KINDS = ("decoder", "embed_lasttok")
+
+
 def load_model(encoder: str, device: torch.device):
     spec = ENCODERS[encoder]
-    kwargs = {"dtype": torch.bfloat16} if spec["kind"] == "decoder" else {}
+    kwargs = {"dtype": torch.bfloat16} if spec["kind"] in DECODER_KINDS else {}
     return AutoModel.from_pretrained(spec["model_id"], revision=spec["revision"], **kwargs).to(device).eval()
 
 
@@ -105,6 +109,29 @@ def embed_decoder(texts: list[str], tok, model, device, max_len: int):
     return {"mean": mean, "last": last}, n_truncated
 
 
+@torch.inference_mode()
+def embed_lasttok(texts: list[str], tok, model, device, max_len: int):
+    """Embedding-tuned decoder (Qwen3-Embedding): the model card's instruction
+    prefix, one text per pass, the final token's state (the end-of-text token,
+    appended when the tokenizer does not add it), L2 normalised. Returns
+    ({"last": array}, n_truncated)."""
+    dim = model.config.hidden_size
+    last = np.zeros((len(texts), dim), np.float32)
+    eos = tok.eos_token_id
+    n_truncated, t0 = 0, time.time()
+    for i, text in enumerate(texts):
+        ids = tok(QWEN_INSTRUCTION + text)["input_ids"]
+        if ids[-1] != eos:
+            ids = ids + [eos]
+        if len(ids) > max_len:
+            ids, n_truncated = ids[:max_len - 1] + [eos], n_truncated + 1
+        hidden = model(input_ids=torch.tensor([ids], device=device)).last_hidden_state[0, -1].float()
+        last[i] = torch.nn.functional.normalize(hidden, dim=0).cpu().numpy()
+        if (i + 1) % 100 == 0:
+            logger.info(f"  {i + 1}/{len(texts)} texts ({(time.time() - t0) / (i + 1):.2f}s per text)")
+    return {"last": last}, n_truncated
+
+
 def load_store(out_dir: Path, encoder: str) -> tuple[list[str], dict[str, np.ndarray]]:
     keys_path = out_dir / f"{encoder}_store.keys.txt"
     if not keys_path.exists():
@@ -128,6 +155,13 @@ def save_store(out_dir: Path, encoder: str, keys: list[str], arrays: dict[str, n
     tmp.replace(out_dir / f"{encoder}_store.keys.txt")
 
 
+POOLING_NOTES = {
+    "decoder": "mean over final hidden states excluding BOS; last = final token's state",
+    "embed_lasttok": "instruction prefix; final (end-of-text) token's state, L2 normalised",
+    "bert": "mask-aware mean; >512 tokens: 510-token windows, length-weighted average of window means",
+}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="exp19: embed every serialised text once per encoder")
     parser.add_argument("--encoders", nargs="+", choices=sorted(ENCODERS), required=True)
@@ -146,7 +180,7 @@ def main() -> None:
 
     for encoder in args.encoders:
         spec = ENCODERS[encoder]
-        decoder = spec["kind"] == "decoder"
+        decoder = spec["kind"] in DECODER_KINDS
         device = torch.device(args.device or ("cpu" if decoder or not torch.cuda.is_available() else "cuda"))
         keys, arrays = load_store(args.out_dir, encoder)
         have = set(keys)
@@ -157,7 +191,9 @@ def main() -> None:
         logger.info(f"{encoder}: embedding {len(todo)} new texts with {spec['model_id']}@{spec['revision'][:8]} on {device}")
         tok, model = load_tokenizer(encoder), load_model(encoder, device)
         t0 = time.time()
-        if decoder:
+        if spec["kind"] == "embed_lasttok":
+            new, n_cut = embed_lasttok(todo, tok, model, device, spec["max_len"])
+        elif decoder:
             new, n_cut = embed_decoder(todo, tok, model, device, spec["max_len"])
         else:
             new, n_cut = embed_bert(todo, tok, model, device, args.batch_size, spec["max_len"])
@@ -169,9 +205,7 @@ def main() -> None:
         manifest.update({"encoder": encoder, "model_id": spec["model_id"], "revision": spec["revision"],
                          "dtype": "bfloat16" if decoder else "float32", "max_len": spec["max_len"],
                          "template_version": TEMPLATE_VERSION, "n_texts": len(keys),
-                         "pooling": ("mean over final hidden states excluding BOS; last = final token's state"
-                                     if decoder else "mask-aware mean; >512 tokens: 510-token windows, "
-                                     "length-weighted average of window means")})
+                         "pooling": POOLING_NOTES[spec["kind"]]})
         manifest["runs"].append({"n_new": len(todo), ("n_truncated" if decoder else "n_windowed"): int(n_cut),
                                  "seconds": round(time.time() - t0, 1), "provenance": run_provenance()})
         manifest_path.write_text(json.dumps(manifest, indent=2))
