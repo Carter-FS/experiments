@@ -41,3 +41,27 @@ def test_holm_matches_hand_computation():
     assert holm([0.01, 0.04]) == pytest.approx([0.02, 0.04])
     assert holm([0.04, 0.01]) == pytest.approx([0.04, 0.02])
     assert holm([0.6, 0.7]) == pytest.approx([1.0, 1.0])  # 2 x 0.6 caps at 1
+
+
+def test_file_variants_parse_protocol_and_label():
+    from exp18_mixed_cohort.analyse import FILE_RE
+    cases = {
+        "predictions_Exp4a_seed42.csv": ("Exp4a", "", "42"),
+        "predictions_Exp4a_rf5_seed43.csv": ("Exp4a", "_rf5", "43"),
+        "predictions_Exp4a_rf5_h12_seed44.csv": ("Exp4a", "_rf5_h12", "44"),
+        "predictions_Exp5a_rf5_noRMH_seed45.csv": ("Exp5a", "_rf5_noRMH", "45"),
+        "predictions_LF_T5a-full_rf5_dedup_seed46.csv": ("LF_T5a-full", "_rf5_dedup", "46"),
+    }
+    for name, want in cases.items():
+        m = FILE_RE.search(name)
+        assert m and (m.group(1), m.group(2), m.group(3)) == want, name
+    assert FILE_RE.search("predictions_Exp4a_rf5_smoke_seed42.csv") is None
+
+
+def test_test_variants_kinds():
+    import pandas as pd
+    from exp18_mixed_cohort.analyse import test_variants
+    preds = pd.DataFrame({"config": ["Exp4a"] * 3, "variant": ["", "_rf5", "_rf5_h12"]})
+    assert test_variants(preds) == [("primary", "_rf5"), ("preregistered", ""), ("sensitivity", "_rf5_h12")]
+    preds = pd.DataFrame({"config": ["Exp4a"] * 2, "variant": ["_rf5", "_rf5_dedup"]})
+    assert test_variants(preds)[0] == ("primary", "_rf5_dedup")

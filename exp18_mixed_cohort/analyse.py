@@ -16,10 +16,14 @@ Metrics (docs/analysis_plan_clean_rerun_exp18.md, section 6):
   - calibration per cohort: Brier, calibration-in-the-large (mean predicted
     minus observed, not the logistic-offset intercept) and calibration slope.
 
-Primary tests use the deduplicated cohort (variant "_dedup") when that run
-exists, otherwise the unmodified one. The Nadeau-Bengio variance inflation
-uses n_test / n_train of the outer folds (about 0.25); each arm's model is
-fitted on 80% of its share of the outer training fold.
+Variants: "_rf<k>" refit protocol (primary from analysis plan Addendum B.2;
+no prefix = the pre-registered inner-split protocol), "_h12" harmonised HEP1
+label (B.5), "_noRMH" and "_dedup" as in section 6. Primary tests use the
+refit runs on the provided HEP1 label (deduplicated when that run exists);
+the same tests on the inner-split runs are reported as "preregistered" and on
+the harmonised label as "sensitivity". The Nadeau-Bengio variance inflation
+uses n_test / n_train of the test cohort's own share of each outer fold, the
+training set of the own-cohort arm (B.6).
 
     python -m exp18_mixed_cohort.analyse
 """
@@ -44,7 +48,7 @@ COHORTS = ("MEL", "HEP")
 OWN = {"MEL": "mel_only", "HEP": "hep_only"}
 OTHER = {"MEL": "hep_only", "HEP": "mel_only"}
 FILE_RE = re.compile(r"predictions_(" + "|".join(re.escape(c) for c in sorted(CONFIGS, key=len, reverse=True))
-                     + r")(_noRMH)?(_dedup)?_seed(\d+)\.csv$")
+                     + r")((?:_rf\d+)?(?:_h12)?(?:_noRMH)?(?:_dedup)?)_seed(\d+)\.csv$")
 
 
 def auc_or_nan(y, p) -> float:
@@ -72,7 +76,7 @@ def load_runs(out_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
         m = FILE_RE.search(f.name)
         if not m:  # smoke runs and anything unexpected are ignored
             continue
-        variant = (m.group(2) or "") + (m.group(3) or "")
+        variant = m.group(2) or ""
         preds.append(pd.read_csv(f, dtype={"pid": str}).assign(variant=variant))
         folds.append(pd.read_csv(f.with_name(f.name.replace("predictions_", "folds_"))).assign(variant=variant))
     if not preds:
@@ -141,34 +145,47 @@ def holm(p: list[float]) -> list[float]:
     return adj.tolist()
 
 
-def primary_variant(preds: pd.DataFrame) -> str:
-    """The deduplicated cohort once confirmed duplicates were excluded, else the unmodified one."""
-    exp4a = preds.loc[preds["config"] == "Exp4a", "variant"]
-    return "_dedup" if (exp4a == "_dedup").any() else ""
+def test_variants(preds: pd.DataFrame) -> list[tuple[str, str]]:
+    """(kind, variant) pairs for the Exp4a mixed-vs-own tests: the refit runs
+    (primary), the inner-split runs (preregistered) and the harmonised-label
+    refit runs (sensitivity), each on the deduplicated cohort when that run
+    exists."""
+    have = set(preds.loc[preds["config"] == "Exp4a", "variant"])
+    refit = sorted({re.match(r"(_rf\d+)?", v).group(0) for v in have} - {""})
+    out = []
+    for kind, base in [("primary", refit[0] if refit else None), ("preregistered", ""),
+                       ("sensitivity", (refit[0] + "_h12") if refit else None)]:
+        if base is None:
+            continue
+        var = base + "_dedup" if base + "_dedup" in have else base
+        if var in have:
+            out.append((kind, var))
+    return out
 
 
 def primary_tests(preds: pd.DataFrame, folds: pd.DataFrame) -> list[dict]:
-    """Exp4a: mixed vs own-cohort training, per test cohort."""
-    var = primary_variant(preds)
-    g = preds[(preds["config"] == "Exp4a") & (preds["variant"] == var) & (preds["draw"] == -1)]
-    if g.empty:
-        return []
-    fd = folds[(folds["config"] == "Exp4a") & (folds["variant"] == var)]
-    ratio = float((fd["n_test"] / fd["n_train"]).mean())
+    """Exp4a: mixed vs own-cohort training, per test cohort (Holm over the two
+    cohorts within each kind)."""
     rows = []
-    for c in COHORTS:
-        gc = g[g["cohort"] == c]
-        per = pd.DataFrame(
-            [{"seed": s, "fold": k, "arm": a, "auc": auc_or_nan(f["y_true"], f["y_prob"])}
-             for (s, k, a), f in gc.groupby(["seed", "fold", "arm"])]
-        ).pivot_table(index=["seed", "fold"], columns="arm", values="auc", dropna=False)
-        d = (per["mixed"] - per[OWN[c]]).to_numpy()
-        mean_d, t, p = nadeau_bengio(d, ratio)
-        rows.append({"kind": "primary", "config": "Exp4a", "variant": var, "cohort": c,
-                     "contrast": f"mixed - {OWN[c]}", "estimate": mean_d, "stat": t, "p": p,
-                     "n_resamples": int(np.isfinite(d).sum())})
-    for row, p_adj in zip(rows, holm([r["p"] for r in rows])):
-        row["p_holm"] = p_adj
+    for kind, var in test_variants(preds):
+        g = preds[(preds["config"] == "Exp4a") & (preds["variant"] == var) & (preds["draw"] == -1)]
+        fd = folds[(folds["config"] == "Exp4a") & (folds["variant"] == var)]
+        kind_rows = []
+        for c in COHORTS:
+            ratio = float((fd[f"n_test_{c}"] / fd[f"n_train_{c}"]).mean())
+            gc = g[g["cohort"] == c]
+            per = pd.DataFrame(
+                [{"seed": s, "fold": k, "arm": a, "auc": auc_or_nan(f["y_true"], f["y_prob"])}
+                 for (s, k, a), f in gc.groupby(["seed", "fold", "arm"])]
+            ).pivot_table(index=["seed", "fold"], columns="arm", values="auc", dropna=False)
+            d = (per["mixed"] - per[OWN[c]]).to_numpy()
+            mean_d, t, p = nadeau_bengio(d, ratio)
+            kind_rows.append({"kind": kind, "config": "Exp4a", "variant": var, "cohort": c,
+                              "contrast": f"mixed - {OWN[c]}", "estimate": mean_d, "stat": t, "p": p,
+                              "nb_ratio": ratio, "n_resamples": int(np.isfinite(d).sum())})
+        for row, p_adj in zip(kind_rows, holm([r["p"] for r in kind_rows])):
+            row["p_holm"] = p_adj
+        rows += kind_rows
     return rows
 
 
@@ -218,9 +235,10 @@ def main() -> None:
     view = summary[summary["metric"].isin(["auc", "stratified_auc", "whole_fold_auc"])]
     print(view.pivot_table(index=["config", "variant", "arm"], columns=["metric", "cohort"],
                            values="mean").round(3).to_string())
-    if not tests.empty and (tests["kind"] == "primary").any():
-        print("\nPrimary tests (Exp4a, Nadeau-Bengio, Holm over 2):")
-        print(tests[tests["kind"] == "primary"][["cohort", "contrast", "estimate", "stat", "p", "p_holm"]]
+    confirmatory = tests[tests["kind"] != "exploratory"] if not tests.empty else tests
+    if not confirmatory.empty:
+        print("\nExp4a mixed vs own-cohort (Nadeau-Bengio, Holm over 2 within each kind):")
+        print(confirmatory[["kind", "variant", "cohort", "contrast", "estimate", "stat", "p", "p_holm"]]
               .round(4).to_string(index=False))
     print(f"\nwrote per_seed.csv, summary.csv, tests.csv to {args.out_dir}")
 

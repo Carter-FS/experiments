@@ -15,9 +15,14 @@ from shared.serialise_clinical import BINARY_COLS, CATEGORICAL_COLS
 
 
 class FullClinicalPreprocessor:
+    """``drop`` removes binary features (exp18's cross-cohort set, plan B.4)."""
+
+    def __init__(self, drop: tuple[str, ...] = ()):
+        self.binary = [c for c in BINARY_COLS if c not in drop]
+
     def fit(self, df: pd.DataFrame) -> "FullClinicalPreprocessor":
         self.modes = {}
-        for col in BINARY_COLS:
+        for col in self.binary:
             mode = pd.to_numeric(df[col], errors="coerce").mode()
             self.modes[col] = float(mode.iloc[0]) if len(mode) else 0.0
         age = pd.to_numeric(df["age_init"], errors="coerce")
@@ -27,7 +32,7 @@ class FullClinicalPreprocessor:
 
     def transform(self, df: pd.DataFrame) -> np.ndarray:
         cols = []
-        for col in BINARY_COLS:
+        for col in self.binary:
             v = pd.to_numeric(df[col], errors="coerce")
             cols += [v.fillna(self.modes[col]).to_numpy(), v.isna().to_numpy()]
         age = pd.to_numeric(df["age_init"], errors="coerce")
@@ -39,4 +44,4 @@ class FullClinicalPreprocessor:
 
     @property
     def n_features(self) -> int:
-        return 2 * len(BINARY_COLS) + 2 + 4 * len(CATEGORICAL_COLS)
+        return 2 * len(self.binary) + 2 + 4 * len(CATEGORICAL_COLS)

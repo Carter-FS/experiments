@@ -20,6 +20,7 @@ import torch
 
 from shared.cv_splits import joint_key
 from shared.hep_cohort import (
+    CROSS_COHORT_DROP,
     build_smiles_feature_matrix,
     build_smiles_lookup,
     load_alfred,
@@ -57,15 +58,17 @@ def _tag(df: pd.DataFrame, cohort: str) -> pd.DataFrame:
     return df
 
 
-def load_pooled(config: str, exclude_rmh: bool = False, exclude_hep_pids=()) -> PooledCohort:
+def load_pooled(config: str, exclude_rmh: bool = False, exclude_hep_pids=(),
+                hep_outcome: str = "provided") -> PooledCohort:
     """Build the pooled cohort for one configuration.
 
     ``exclude_rmh`` drops every HEP1 Royal Melbourne Hospital patient (the
     sensitivity analysis); ``exclude_hep_pids`` drops confirmed cross-cohort
-    duplicates from HEP1 (they stay in Melbourne).
+    duplicates from HEP1 (they stay in Melbourne); ``hep_outcome`` selects the
+    provided or 12-month harmonised HEP1 label (analysis plan B.5).
     """
     mods = MODALITIES[config]
-    mel, hep = load_alfred(), load_hep()
+    mel, hep = load_alfred(), load_hep(hep_outcome)
     if len(exclude_hep_pids):
         # Accept source pids or pooled "HEP_" pids; every listed pid must be a
         # HEP1 patient, so a typo or the wrong id scheme cannot exclude nobody.
@@ -126,6 +129,7 @@ def load_pooled(config: str, exclude_rmh: bool = False, exclude_hep_pids=()) -> 
 
 
 def clinical_features(pooled: PooledCohort, fit_idx: np.ndarray) -> torch.Tensor:
-    """Clinical tensor for every pooled row, preprocessor fitted on ``fit_idx`` only."""
-    clinical, _ = refit_clinical(pooled.df, pooled.df, fit_idx)
+    """Clinical tensor for every pooled row, preprocessor fitted on ``fit_idx``
+    only, without the features constant in HEP1 (analysis plan B.4)."""
+    clinical, _ = refit_clinical(pooled.df, pooled.df, fit_idx, drop=CROSS_COHORT_DROP)
     return clinical

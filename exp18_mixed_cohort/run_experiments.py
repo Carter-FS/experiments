@@ -3,17 +3,22 @@
 For each configuration and seed, one outer 5-fold split of the pooled
 Melbourne + HEP1 cohort (stratified on outcome x cohort). Every arm trains on
 its share of each outer training fold (mixed / Melbourne only / HEP1 only),
-early-stops on a 20% inner split of that share, and scores every outer test
-patient in both cohorts, so all arms are compared on the same test patients.
-Exp4a also runs size-matched mixed training (10 draws per test cohort).
+selects its epoch count on inner data of that share (a 20% inner split, or
+under --refit-folds five inner folds and a refit on the whole share, analysis
+plan B.2; the mixed arm then selects on the cohort-stratified AUC, B.6), and
+scores every outer test patient in both cohorts, so all arms are compared on
+the same test patients. Exp4a also runs size-matched mixed training (10 draws
+per test cohort). Clinical inputs omit the features constant in HEP1 (B.4).
 
     python -m exp18_mixed_cohort.run_experiments --config Exp4a            # all its seeds
     python -m exp18_mixed_cohort.run_experiments --config Exp4a Exp5a --seeds 42
     python -m exp18_mixed_cohort.run_experiments --config Exp4a --exclude-rmh   # sensitivity
     python -m exp18_mixed_cohort.run_experiments --config Exp4a --smoke    # 1 fold, 2 epochs
+    python -m exp18_mixed_cohort.run_experiments --config Exp4a --refit-folds 5 [--hep-outcome harmonised12]
 
 Outputs (outputs/exp18_mixed_cohort/, patient-level, gitignored):
-    predictions_<cfg><variant>_seed<k>.csv   one row per (arm, draw, test patient)
+    predictions_<cfg><variant>_seed<k>.csv   one row per (arm, draw, test patient);
+                                             variant = [_rf5][_h12][_noRMH][_dedup]
     folds_<cfg><variant>_seed<k>.csv         per-fold train/test composition
     run_<cfg><variant>_seed<k>.json          arguments + provenance
 Existing outputs are skipped unless --force, so slurm array tasks can resume.
@@ -34,8 +39,12 @@ from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import train_test_split
 
 import shared.portable_models as portable
-from shared.cv_splits import inner_val_split, outer_splits, set_repeat_seed, youden_threshold
+from shared.cv_splits import (
+    inner_val_split, outer_splits, refit_folds, set_refit_folds, set_repeat_seed, youden_threshold,
+)
 from shared.determinism import enable_determinism
+from shared.epoch_selection import refit_protocol
+from shared.hep_cohort import HEP_OUTCOMES, hep_outcome_tag
 from shared.prediction_logger import run_provenance
 
 from .config import (
@@ -57,37 +66,39 @@ from .data_pipeline import PooledCohort, clinical_features, load_pooled
 logger = logging.getLogger("exp18")
 
 
-def train_predict(pooled: PooledCohort, fit_idx, es_idx, test_idx, device) -> tuple[np.ndarray, float]:
-    """Train on ``fit_idx``, early-stop on ``es_idx``; return (test probs, es threshold)."""
+def _fit(pooled: PooledCohort, fit_idx, es_idx, device, *, trace=None, fixed_epochs=None, val_cohorts=None):
+    """Train on ``fit_idx`` (early-stopping on ``es_idx`` unless ``fixed_epochs``);
+    returns (model, predict) where predict(idx) gives probabilities."""
     cfg, y = PORTABLE_MODEL[pooled.config], pooled.labels
+    es_labels = None if es_idx is None else y[es_idx]
+    kw = dict(trace=trace, fixed_epochs=fixed_epochs, val_cohorts=val_cohorts)
     if pooled.config in LF_INPUTS:
-        return _train_predict_late_fusion(pooled, cfg, fit_idx, es_idx, test_idx, device)
+        return _fit_late_fusion(pooled, cfg, fit_idx, es_idx, device, **kw)
     mods = dict(pooled.modalities)
     mods["clinical"] = clinical_features(pooled, fit_idx)
     if cfg in portable.EEG_CONFIGS:
         sub = lambda idx: portable.index_modalities(mods, idx)  # noqa: E731
-        model = portable.train_fold_eeg(cfg, sub(fit_idx), sub(es_idx), y[fit_idx], y[es_idx], device)
-        es_probs = portable.predict_eeg(model, sub(es_idx), cfg, device)
-        test_probs = portable.predict_eeg(model, sub(test_idx), cfg, device)
-    else:
-        tensors = [mods["clinical"]] + [mods[k] for k in ("smiles", "text") if k in mods]
-        sub = lambda idx: [t[idx] for t in tensors]  # noqa: E731
-        model = portable.train_fold(cfg, sub(fit_idx), sub(es_idx), y[fit_idx], y[es_idx], device)
-        es_probs = portable.predict(model, sub(es_idx), cfg, device)
-        test_probs = portable.predict(model, sub(test_idx), cfg, device)
-    return test_probs, youden_threshold(y[es_idx].numpy(), es_probs)
+        model = portable.train_fold_eeg(cfg, sub(fit_idx), None if es_idx is None else sub(es_idx),
+                                        y[fit_idx], es_labels, device, **kw)
+        return model, lambda idx: portable.predict_eeg(model, sub(idx), cfg, device)
+    tensors = [mods["clinical"]] + [mods[k] for k in ("smiles", "text") if k in mods]
+    sub = lambda idx: [t[idx] for t in tensors]  # noqa: E731
+    model = portable.train_fold(cfg, sub(fit_idx), None if es_idx is None else sub(es_idx),
+                                y[fit_idx], es_labels, device, **kw)
+    return model, lambda idx: portable.predict(model, sub(idx), cfg, device)
 
 
-def _train_predict_late_fusion(pooled: PooledCohort, cfg: str, fit_idx, es_idx, test_idx, device):
+def _fit_late_fusion(pooled: PooledCohort, cfg: str, fit_idx, es_idx, device, **kw):
     """exp19 configurations (LateFusionMLP): embedding inputs z-scored and clinical
     preprocessors fitted on this arm's fit rows."""
     from exp19_serialised_clinical.tabular import FullClinicalPreprocessor
+    from shared.hep_cohort import CROSS_COHORT_DROP
     y, tensors = pooled.labels, []
     for name in LF_INPUTS[pooled.config]:
         if name == "clinical":
             tensors.append(clinical_features(pooled, fit_idx))
         elif name == "clinical_full":
-            pre = FullClinicalPreprocessor().fit(pooled.df.iloc[fit_idx])
+            pre = FullClinicalPreprocessor(drop=CROSS_COHORT_DROP).fit(pooled.df.iloc[fit_idx])
             tensors.append(torch.from_numpy(pre.transform(pooled.df)))
         else:
             x = pooled.modalities[name].float()
@@ -95,10 +106,41 @@ def _train_predict_late_fusion(pooled: PooledCohort, cfg: str, fit_idx, es_idx, 
             tensors.append((x - mu) / sd)
     dims = [t.shape[1] for t in tensors]
     sub = lambda idx: [t[idx] for t in tensors]  # noqa: E731
-    model = portable.train_fold(cfg, sub(fit_idx), sub(es_idx), y[fit_idx], y[es_idx], device,
-                                model_factory=lambda: portable.LateFusionMLP(dims))
-    es_probs = portable.predict(model, sub(es_idx), cfg, device)
-    return portable.predict(model, sub(test_idx), cfg, device), youden_threshold(y[es_idx].numpy(), es_probs)
+    model = portable.train_fold(cfg, sub(fit_idx), None if es_idx is None else sub(es_idx), y[fit_idx],
+                                None if es_idx is None else y[es_idx], device,
+                                model_factory=lambda: portable.LateFusionMLP(dims), **kw)
+    return model, lambda idx: portable.predict(model, sub(idx), cfg, device)
+
+
+def train_predict(pooled: PooledCohort, fit_idx, es_idx, test_idx, device) -> tuple[np.ndarray, float]:
+    """Inner-split protocol: train on ``fit_idx``, early-stop on ``es_idx``;
+    return (test probs, es threshold)."""
+    _, predict = _fit(pooled, fit_idx, es_idx, device)
+    return predict(test_idx), youden_threshold(pooled.labels[es_idx].numpy(), predict(es_idx))
+
+
+def fit_arm(pooled: PooledCohort, arm: str, arm_tr, test_idx, fold: int, seed: int, device):
+    """Train one arm on its share ``arm_tr`` of the outer training fold under the
+    active protocol; returns (test probs, threshold, n_fit, n_es, selection)."""
+    if not refit_folds():
+        fit, es = inner_val_split(pooled.key, arm_tr, INNER_FRAC, seed + fold)
+        probs, thr = train_predict(pooled, fit, es, test_idx, device)
+        return probs, thr, len(fit), len(es), None
+    y = pooled.labels.numpy()
+    # A model that sees both cohorts selects on within-cohort ranking only (B.6).
+    cohorts = pooled.df["cohort"].to_numpy() if arm == "mixed" else None
+
+    def run_inner(fit, val):
+        trace: dict = {}
+        _fit(pooled, fit, val, device, trace=trace, val_cohorts=None if cohorts is None else cohorts[val])
+        return trace
+
+    def run_refit(full, choice):
+        return _fit(pooled, full, None, device, fixed_epochs=choice.epoch)[1](test_idx)
+
+    choice, probs = refit_protocol(y, pooled.key, arm_tr, fold, run_inner, run_refit,
+                                   cohorts=cohorts, n_inner=refit_folds(), seed=seed)
+    return probs, choice.threshold, len(arm_tr), 0, choice.as_metadata()
 
 
 def sizematched_subsample(pooled: PooledCohort, train_idx, n: int, random_state: int) -> np.ndarray:
@@ -130,11 +172,13 @@ def _run_seed(pooled: PooledCohort, seed: int, device, arms, sizematch: bool,
     seen_test: list[np.ndarray] = []
     rows, fold_rows = [], []
 
-    def record(arm, draw, fold, test_idx, probs, thr, n_fit, n_es):
+    def record(arm, draw, fold, test_idx, probs, thr, n_fit, n_es, selection=None):
+        epoch = selection["epoch"] if selection else None
         for i, p in zip(test_idx, probs):
             rows.append({"config": pooled.config, "seed": seed, "fold": fold, "arm": arm, "draw": draw,
                          "pid": df["pid"].iat[i], "cohort": cohort[i], "y_true": int(y[i]),
-                         "y_prob": float(p), "threshold": thr, "n_fit": n_fit, "n_es": n_es})
+                         "y_prob": float(p), "threshold": thr, "n_fit": n_fit, "n_es": n_es,
+                         "selected_epoch": epoch})
 
     for fold, (tr, te) in enumerate(splits[:max_folds]):
         assert not set(tr) & set(te)
@@ -147,14 +191,13 @@ def _run_seed(pooled: PooledCohort, seed: int, device, arms, sizematch: bool,
         })
         for arm in arms:
             arm_tr = tr[np.isin(cohort[tr], ARM_COHORTS[arm])]
-            fit, es = inner_val_split(pooled.key, arm_tr, INNER_FRAC, seed + fold)
             enable_determinism(seed + fold)  # same init for every arm of a fold
             t0 = time.time()
-            probs, thr = train_predict(pooled, fit, es, te, device)
-            record(arm, -1, fold, te, probs, thr, len(fit), len(es))
+            probs, thr, n_fit, n_es, selection = fit_arm(pooled, arm, arm_tr, te, fold, seed, device)
+            record(arm, -1, fold, te, probs, thr, n_fit, n_es, selection)
             aucs = {c: roc_auc_score(y[te][cohort[te] == c], probs[cohort[te] == c])
                     for c in ("MEL", "HEP") if len(set(y[te][cohort[te] == c])) > 1}
-            logger.info(f"{pooled.config} seed {seed} fold {fold} {arm:8s} fit {len(fit):3d}  "
+            logger.info(f"{pooled.config} seed {seed} fold {fold} {arm:8s} fit {n_fit:3d}  "
                         + "  ".join(f"{c} AUC {a:.3f}" for c, a in aucs.items())
                         + f"  ({time.time() - t0:.0f}s)")
         if sizematch:
@@ -164,10 +207,9 @@ def _run_seed(pooled: PooledCohort, seed: int, device, arms, sizematch: bool,
                 for draw in range(draws):
                     rs = seed * 10_000 + fold * 100 + draw * 2 + (c == "HEP")
                     sub = sizematched_subsample(pooled, tr, n_own, rs)
-                    fit, es = inner_val_split(pooled.key, sub, INNER_FRAC, seed + fold)
                     enable_determinism(seed + fold)
-                    probs, thr = train_predict(pooled, fit, es, test_c, device)
-                    record(f"sizematched_{c}", draw, fold, test_c, probs, thr, len(fit), len(es))
+                    probs, thr, n_fit, n_es, selection = fit_arm(pooled, "mixed", sub, test_c, fold, seed, device)
+                    record(f"sizematched_{c}", draw, fold, test_c, probs, thr, n_fit, n_es, selection)
     if max_folds is None:
         all_test = np.concatenate(seen_test)
         assert len(all_test) == len(df) == len(set(all_test)), "outer folds must partition the cohort"
@@ -188,7 +230,12 @@ def main() -> None:
     parser.add_argument("--force", action="store_true", help="overwrite existing outputs")
     parser.add_argument("--device", default=None)
     parser.add_argument("--smoke", action="store_true", help="1 fold, 2 epochs, 1 size-matched draw")
+    parser.add_argument("--refit-folds", type=int, default=0, dest="refit_folds",
+                        help="refit protocol (analysis plan B.2): inner folds for epoch selection; 0 = inner split")
+    parser.add_argument("--hep-outcome", choices=HEP_OUTCOMES, default="provided", dest="hep_outcome",
+                        help="HEP1 label: provided, or the 12-month harmonised sensitivity label (B.5)")
     args = parser.parse_args()
+    set_refit_folds(args.refit_folds)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
@@ -198,7 +245,8 @@ def main() -> None:
     excluded = []
     if args.exclude_hep_pids:
         excluded = [s.strip() for s in args.exclude_hep_pids.read_text().splitlines() if s.strip()]
-    variant = ("_noRMH" if args.exclude_rmh else "") + ("_dedup" if excluded else "") \
+    variant = (f"_rf{args.refit_folds}" if args.refit_folds else "") + hep_outcome_tag(args.hep_outcome) \
+        + ("_noRMH" if args.exclude_rmh else "") + ("_dedup" if excluded else "") \
         + ("_smoke" if args.smoke else "")
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -209,7 +257,8 @@ def main() -> None:
         if not todo:
             logger.info(f"{cfg}: all seeds done, skipping")
             continue
-        pooled = load_pooled(cfg, exclude_rmh=args.exclude_rmh, exclude_hep_pids=excluded)
+        pooled = load_pooled(cfg, exclude_rmh=args.exclude_rmh, exclude_hep_pids=excluded,
+                             hep_outcome=args.hep_outcome)
         counts = pooled.df.groupby("cohort")["outcome"].agg(["size", "mean"]).round(3).to_dict("index")
         logger.info(f"{cfg}: pooled n={len(pooled.df)} {counts}; device {device}")
         for seed in todo:
@@ -225,7 +274,10 @@ def main() -> None:
             (args.out_dir / f"run_{stem}.json").write_text(json.dumps({
                 "config": cfg, "seed": seed, "arms": args.arms, "variant": variant,
                 "exclude_rmh": args.exclude_rmh, "excluded_hep_pids": len(excluded),
-                "n_pooled": len(pooled.df), "inner_frac": INNER_FRAC, "provenance": {**run_provenance(), "cv_seed": seed},
+                "n_pooled": len(pooled.df), "hep_outcome": args.hep_outcome,
+                "protocol": "refit" if args.refit_folds else "innersplit", "refit_folds": args.refit_folds,
+                "inner_frac": 0.0 if args.refit_folds else INNER_FRAC,
+                "provenance": {**run_provenance(), "cv_seed": seed},
             }, indent=2))
             logger.info(f"wrote predictions_{stem}.csv ({len(preds)} rows)")
 
