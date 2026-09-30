@@ -207,13 +207,14 @@ verify () {
     rm -f "$expect"
     echo ""
     echo "== task completion =="
-    local n_done=0
+    local n_done=0 n_deferred=0
     for item in $(items); do
         if [[ -f "$DONE/${item%%:*}_s${item##*:}.done" ]] && exp18_ready "${item%%:*}" "${item##*:}"; then
             n_done=$((n_done + 1))
+        elif deferred "$item"; then n_deferred=$((n_deferred + 1))
         else echo "MISSING $item"; rc=1; fi
     done
-    echo "$n_done/$(items | wc -l) work items done"
+    echo "$n_done/$(items | wc -l) work items done, $n_deferred deferred (RUN_DEFERRED=1 to include)"
     local locks
     locks=$(ls -d "$DONE"/*.lock 2>/dev/null)
     if [[ -n "$locks" ]]; then
@@ -223,10 +224,12 @@ verify () {
     echo ""
     echo "== clean HEP outputs (file per seed, one summary row per configuration) =="
     local f want csv rows
-    local specs=(hep_external_summary:3: hep_external_summary_eeg:3: hep_reverse_summary:3:
-                 hep_focal_external_summary:2: hep_reduced_external_summary:1:)
-    [[ "$PROTOCOL" == refit ]] && specs+=(hep_external_summary:3:_h12 hep_external_summary_eeg:3:_h12
-                                         hep_reverse_summary:3:_h12)
+    local specs=(hep_external_summary:3: hep_reverse_summary:3: hep_focal_external_summary:2:)
+    if [[ "$PROTOCOL" == refit || "${RUN_DEFERRED:-0}" == 1 ]]; then
+        specs+=(hep_external_summary_eeg:3: hep_reduced_external_summary:1:)
+    fi
+    [[ "$PROTOCOL" == refit ]] && specs+=(hep_external_summary:3:_h12 hep_reverse_summary:3:_h12)
+    [[ "$PROTOCOL" == refit && "${RUN_DEFERRED:-0}" == 1 ]] && specs+=(hep_external_summary_eeg:3:_h12)
     local tag
     for spec in "${specs[@]}"; do
         IFS=: read -r f want tag <<< "$spec"
@@ -283,10 +286,38 @@ preflight () {
 # A static filter of `list`, so array indices never move.
 CPU_TASK_RE='^(exp4|exp15|exp4_decomp|hep_forward|hep_forward_h12|hep_reverse|hep_reverse_h12|hep_focal|reve|exp18_(h12_)?(Exp4a|Exp5a|Exp5b|noRMH|S19[AD]_[a-z0-9_]+|LF_T5a-full|LF_T6a)|exp19_[a-z0-9_]+):'
 
+# Deferred (2026-09-30): items nothing in the paper reports, skipped to fit the
+# per-user GPU cap. A deferred item exits at once without a done marker and
+# `verify` counts it as deferred, not missing; RUN_DEFERRED=1 runs it.
+#   both protocols: exp9 ablations other than the four encoders compared in
+#                   the paper, and exp11 (EEG2Vec-128 variants, an appendix aside)
+#   refit:          the harmonised-HEP1-label items for EEG configurations
+#   innersplit:     everything except the headline configurations (exp1-6,
+#                   exp7a) and the cheap CPU items (HEP forward/reverse/focal,
+#                   REVE, exp15, exp18 clinical/text, exp19)
+DEFER_BOTH='exp9_(encoder_frozen|aggregator_[a-z0-9_]+|embed_dim_[0-9]+)|exp11_[a-z0-9_]+'
+case "$PROTOCOL" in
+    refit) DEFER_RE="^(${DEFER_BOTH}|hep_eeg_h12|exp18_h12_(Exp5c|Exp6b|Exp7a)):" ;;
+    innersplit) DEFER_RE="^(${DEFER_BOTH}|exp9_[a-z0-9_]+|exp7b|exp7a_stratbatch|exp16|exp17|hep_eeg|hep_reduced|exp18_(Exp5c|Exp6b|Exp7a)):" ;;
+esac
+deferred () { [[ "${RUN_DEFERRED:-0}" != 1 ]] && grep -qE "$DEFER_RE" <<< "$1"; }
+
 # The clean_rerun_expected.txt globs for the active protocol: the file is
 # written for the inner split; the refit protocol swaps the suffix and adds
 # its decomposition cells.
 expected_files () {
+    expected_files_all | filter_deferred_files
+}
+
+# Drop the expected files of deferred items (unless RUN_DEFERRED=1).
+filter_deferred_files () {
+    if [[ "${RUN_DEFERRED:-0}" == 1 ]]; then cat; return; fi
+    local drop='^exp11_predictions/|^exp9_predictions/predictions_oof_exp9_(encoder_frozen|aggregator_|embed_dim_)'
+    [[ "$PROTOCOL" == innersplit ]] && drop="$drop"'|^exp9_predictions/predictions_oof_exp9_(baseline|encoder_(eegnet|labram|eeg2vec))|^exp7_predictions/predictions_oof_(7b|asmstratbatch)|^exp16_predictions/|^exp17_predictions/'
+    grep -vE "$drop"
+}
+
+expected_files_all () {
     local s a b
     # Every exp9 ablation and every exp11 base (one work item each).
     for s in "${SEEDS[@]}"; do
@@ -372,6 +403,9 @@ case "${1:-}" in
         mkdir -p "$DONE"
         if [[ -f "$marker" && "${FORCE:-0}" != 1 ]] && exp18_ready "$task" "$seed"; then
             echo "== $task seed $seed already done ($marker); FORCE=1 to rerun =="; exit 0
+        fi
+        if deferred "$task:$seed"; then
+            echo "== $task seed $seed deferred for $PROTOCOL (RUN_DEFERRED=1 to run it) =="; exit 0
         fi
         # One runner per item: the CPU and GPU arrays can both reach it. mkdir is
         # atomic on Lustre; the lock goes when this shell exits or is cancelled.
