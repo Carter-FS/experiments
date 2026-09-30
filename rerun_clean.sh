@@ -3,6 +3,7 @@
 #
 #   bash rerun_clean.sh preflight         # check env, data, caches and repos before submitting
 #   bash rerun_clean.sh list              # work items "task:seed", in array-index order
+#   bash rerun_clean.sh list-cpu          # the items that need no GPU (rerun_clean_cpu.slurm)
 #   bash rerun_clean.sh <task>:<seed>     # run one item (skipped if already done)
 #   bash rerun_clean.sh smoke <task>      # exp18 1-fold / 2-epoch dry run, output to /tmp
 #   bash rerun_clean.sh verify            # gate: verify_oof + expected files + exp18 + HEP
@@ -213,6 +214,12 @@ verify () {
         else echo "MISSING $item"; rc=1; fi
     done
     echo "$n_done/$(items | wc -l) work items done"
+    local locks
+    locks=$(ls -d "$DONE"/*.lock 2>/dev/null)
+    if [[ -n "$locks" ]]; then
+        echo "items locked (running now, or left by a killed job; remove the .lock directory if nothing runs it):"
+        echo "$locks" | sed 's/^/  /'
+    fi
     echo ""
     echo "== clean HEP outputs (file per seed, one summary row per configuration) =="
     local f want csv rows
@@ -269,6 +276,12 @@ preflight () {
     echo "(compare both commits with the laptop before submitting)"
     return $rc
 }
+
+# Items that run comfortably without a GPU (tabular, embedding-only or
+# precomputed-feature models). rerun_clean_cpu.slurm runs them on the CPU
+# partition, outside the per-user GPU cap; the GPU arrays skip them once done.
+# A static filter of `list`, so array indices never move.
+CPU_TASK_RE='^(exp4|exp15|exp4_decomp|hep_forward|hep_forward_h12|hep_reverse|hep_reverse_h12|hep_focal|reve|exp18_(h12_)?(Exp4a|Exp5a|Exp5b|noRMH|S19[AD]_[a-z0-9_]+|LF_T5a-full|LF_T6a)|exp19_[a-z0-9_]+):'
 
 # The clean_rerun_expected.txt globs for the active protocol: the file is
 # written for the inner split; the refit protocol swaps the suffix and adds
@@ -341,6 +354,7 @@ items () {
 
 case "${1:-}" in
     list) items ;;
+    list-cpu) items | grep -E "$CPU_TASK_RE" ;;
     preflight) preflight ;;
     verify) verify ;;
     archive-iv20) archive_iv20 ;;
@@ -358,6 +372,19 @@ case "${1:-}" in
         mkdir -p "$DONE"
         if [[ -f "$marker" && "${FORCE:-0}" != 1 ]] && exp18_ready "$task" "$seed"; then
             echo "== $task seed $seed already done ($marker); FORCE=1 to rerun =="; exit 0
+        fi
+        # One runner per item: the CPU and GPU arrays can both reach it. mkdir is
+        # atomic on Lustre; the lock goes when this shell exits or is cancelled.
+        lock="$DONE/${task}_s${seed}.lock"
+        if ! mkdir "$lock" 2>/dev/null; then
+            echo "== $task seed $seed is running elsewhere ($(cat "$lock/owner" 2>/dev/null)); skipping =="
+            exit 0
+        fi
+        echo "$(hostname) job ${SLURM_JOB_ID:-none} $(date -Is)" > "$lock/owner"
+        trap 'rm -rf "$lock"' EXIT
+        trap 'exit 143' TERM INT
+        if [[ -f "$marker" && "${FORCE:-0}" != 1 ]] && exp18_ready "$task" "$seed"; then
+            echo "== $task seed $seed finished while waiting ($marker) =="; exit 0
         fi
         echo "== $task seed $seed, protocol $PROTOCOL  (host $(hostname), $(date -Is)) =="
         start=$(date +%s)
