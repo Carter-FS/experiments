@@ -299,7 +299,7 @@ def main() -> None:
     frames = load_frames()
     masks = subgroup_masks(frames)
     oof, ext = load(args.pred_dir, args.protocol)
-    tag = "" if args.protocol == "iv20" else f"_{args.protocol}"
+    suffix = "" if args.protocol == "iv20" else f"_{args.protocol}"
     if not oof:
         raise SystemExit(f"no exp19 prediction files in {args.pred_dir}")
     seeds = per_seed(oof, ext, masks)
@@ -317,9 +317,9 @@ def main() -> None:
     summary = summary.merge(pd.DataFrame(ens), on=["tag", "estimator"], how="left")
     comps = contrasts(oof, ext, masks)
     zs = zero_shot(args.pred_dir, masks)
-    seeds.to_csv(args.pred_dir / f"exp19_per_seed{tag}.csv", index=False)
-    summary.to_csv(args.pred_dir / f"exp19_summary{tag}.csv", index=False)
-    comps.to_csv(args.pred_dir / f"exp19_contrasts{tag}.csv", index=False)
+    seeds.to_csv(args.pred_dir / f"exp19_per_seed{suffix}.csv", index=False)
+    summary.to_csv(args.pred_dir / f"exp19_summary{suffix}.csv", index=False)
+    comps.to_csv(args.pred_dir / f"exp19_contrasts{suffix}.csv", index=False)
     zs.to_csv(args.pred_dir / "exp19_zeroshot_fp32.csv", index=False)
     if not args.no_probe:
         cohort_probe(frames).to_csv(args.pred_dir / "exp19_probe.csv", index=False)
@@ -330,7 +330,7 @@ def main() -> None:
         print("\nPrimary contrast (B vs T5a-full, MLP):")
         print(prim[["a", "internal_diff", "internal_ci90_lo", "internal_ci90_hi", "internal_tost_p_holm", "verdict",
                     "hep_all_diff", "hep_all_ci_lo", "hep_all_ci_hi"]].round(3).to_string(index=False))
-    print(f"\nwrote exp19_per_seed/summary/contrasts{tag}, zeroshot_fp32{'' if args.no_probe else ', probe'}"
+    print(f"\nwrote exp19_per_seed/summary/contrasts{suffix}, zeroshot_fp32{'' if args.no_probe else ', probe'}"
           f" to {args.pred_dir}")
 
 
