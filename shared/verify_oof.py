@@ -37,7 +37,7 @@ EXPECTED_COUNTS = [
     (r"exp16_predictions/predictions_oof", 107),       # reduced-capacity quad (same 107 as exp7)
     (r"exp17_predictions/predictions_oof", 82),        # focal-only quad (focal subset of the 107)
     (r"exp9_predictions/predictions_oof", 147),        # standalone EEG encoder sweep
-    (r"exp19_predictions/predictions_oof_exp19_(D|D-split|T6a)_", 117),  # configurations needing an EEG report
+    (r"exp19_predictions/predictions_oof_exp19_(D|D-tok|D-split|T6a)_", 117),  # configurations needing an EEG report
     (r"exp19_predictions/predictions_oof_exp19_", 198),          # serialised/tabular clinical cohort
     (r"exp11_6b", 147), (r"exp11_(3a|7a)", 107),       # exp11 sub-configs (base leads the name)
     (r"_exp3[ab]_", 107),
