@@ -411,8 +411,18 @@ case "${1:-}" in
         # atomic on Lustre; the lock goes when this shell exits or is cancelled.
         lock="$DONE/${task}_s${seed}.lock"
         if ! mkdir "$lock" 2>/dev/null; then
-            echo "== $task seed $seed is running elsewhere ($(cat "$lock/owner" 2>/dev/null)); skipping =="
-            exit 0
+            # A cancelled job can be killed before its trap removes the lock;
+            # take over a lock whose slurm job no longer exists.
+            owner_job=$(awk '{print $3}' "$lock/owner" 2>/dev/null)
+            if [[ -n "$owner_job" && "$owner_job" != none ]] && command -v squeue >/dev/null \
+                    && [[ -z "$(squeue -h -j "$owner_job" 2>/dev/null)" ]]; then
+                echo "== stale lock from finished job $owner_job; taking it over =="
+                rm -rf "$lock"
+            fi
+            if ! mkdir "$lock" 2>/dev/null; then
+                echo "== $task seed $seed is running elsewhere ($(cat "$lock/owner" 2>/dev/null)); skipping =="
+                exit 0
+            fi
         fi
         echo "$(hostname) job ${SLURM_JOB_ID:-none} $(date -Is)" > "$lock/owner"
         trap 'rm -rf "$lock"' EXIT
