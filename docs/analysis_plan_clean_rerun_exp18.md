@@ -596,3 +596,10 @@ clarifications and corrections are made before any run under Addendum B:
   folds of each fold's inner Youden threshold, applied to the five-fold
   ensemble score; the scored cohort's own Youden point is kept as `_ownthr`
   (descriptive).
+
+### B.10 (2026-10-02): outcome coding confirmed
+
+The data custodian (D. Nhu) checked the code and confirmed the Melbourne
+outcome coding: raw 1 = seizure-free, raw 2 = not seizure-free. This is the
+mapping B.1 adopted from the data dictionary and every Addendum B run used,
+so no result changes.
