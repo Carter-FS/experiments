@@ -603,3 +603,31 @@ The data custodian (D. Nhu) checked the code and confirmed the Melbourne
 outcome coding: raw 1 = seizure-free, raw 2 = not seizure-free. This is the
 mapping B.1 adopted from the data dictionary and every Addendum B run used,
 so no result changes.
+
+### B.11 (2026-10-05, after the results): confidence-interval method and audit notes
+
+Three independent audits of the complete rerun reproduced every reported
+estimate. One found that the B.8 interval, a patient bootstrap shared across
+seeds with each seed's models and fold variances held fixed, is conditional
+on the fitted models: it leaves out retraining variability and the
+Knapp-Hartung small-k inflation, is about half the width of the per-seed
+intervals (median ratio 0.49), and for some near-chance rows excludes 0.5
+where no per-seed interval does (exp7a's seed-to-seed range, 0.52-0.67, also
+falls outside its B.8 interval). Decided with the results in view, so post
+hoc:
+
+- **Reported 95% CI:** the mean over seeds of each seed's random-effects
+  Knapp-Hartung interval (the 2026-09-21 deviation's method). The B.8
+  bootstrap is kept in the outputs as a secondary, conditional interval
+  (`ci_low_boot`, `ci_high_boot`); the seed-to-seed SD is reported alongside.
+- **HEP1 external CIs:** the mean over seeds of each seed's patient-level
+  percentile bootstrap interval (2000 resamples), as the 2026-09-21
+  deviation specified; the shared-resample interval is kept as secondary.
+- **Paired comparisons in Figure 2:** a paired t-test on the five seed-level
+  mean fold AUCs (the 25 seed x fold pairs are not independent).
+- **Notes for reporting:** exp18's EEG cohorts (148 and 108 Melbourne
+  patients, 19-channel EEG cache, 13 clinical variables) are not the main
+  table's cohorts and are not compared with it. exp9's `aggregator_depth_0`
+  is the same model as `aggregator_attention` by construction and is reported
+  once. GPU results differ between M3 node types at the level of individual
+  predictions, so run-to-run differences of about 0.02 AUC are noise.
