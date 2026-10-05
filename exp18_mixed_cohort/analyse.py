@@ -151,7 +151,9 @@ def test_variants(preds: pd.DataFrame) -> list[tuple[str, str]]:
     refit runs (sensitivity), each on the deduplicated cohort when that run
     exists."""
     have = set(preds.loc[preds["config"] == "Exp4a", "variant"])
-    refit = sorted({re.match(r"(_rf\d+)?", v).group(0) for v in have} - {""})
+    # The refit protocol of Addendum B.2 is _rf5; another fold count would be a
+    # different analysis, never the primary one.
+    refit = ["_rf5"] if any(v.startswith("_rf5") for v in have) else []
     out = []
     for kind, base in [("primary", refit[0] if refit else None), ("preregistered", ""),
                        ("sensitivity", (refit[0] + "_h12") if refit else None)]:

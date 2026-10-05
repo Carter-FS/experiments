@@ -9,7 +9,10 @@ inner-split protocol (pre-registered); --protocol chooses.
 
     exp19_per_seed.csv   per (tag, estimator, seed): Melbourne pooled out-of-fold AUC (DeLong CI), fold-mean
                          AUC, HEP1 external AUC overall / complete-case / seen-drug
-    exp19_summary.csv    means over seeds, plus HEP1 AUC of the seed-averaged ensemble with a bootstrap CI
+    exp19_summary.csv    means over seeds, plus HEP1 AUC of the seed-averaged ensemble with a bootstrap CI.
+                         Its internal ci_lo/ci_hi are means of per-seed DeLong intervals on pooled
+                         out-of-fold predictions; the paper's internal CIs come from
+                         thesisStandalone/analysis/output/metrics_oof.csv (Addendum B.11).
     exp19_contrasts.csv  the primary contrast (B vs T5a-full, MLP; three encoders; internal
                          Nadeau-Bengio two one-sided tests against the +/-0.05 margin with Holm, i.e.
                          the 90% CI, and the Holm-adjusted two-sided test for superiority (plan B.7,
@@ -93,7 +96,10 @@ def subgroup_masks(frames) -> dict[str, dict[str, np.ndarray]]:
 def _subset(h: pd.DataFrame, masks, scope, group):
     if group == "all":
         return h
-    return h[h["pid"].map(masks[scope][group]).astype(bool)]
+    flags = h["pid"].map(masks[scope][group])
+    if flags.isna().any():
+        raise KeyError(f"{int(flags.isna().sum())} HEP1 patients missing from the {group} mask")
+    return h[flags.astype(bool)]
 
 
 def scope_of(tag: str) -> str:
