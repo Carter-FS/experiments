@@ -49,7 +49,7 @@ Unit tests: `pytest shared/tests/`.
 
 ```bash
 # Clone the repository
-git clone https://github.com/ThousandEyedLibrarian/experiments
+git clone https://github.com/Carter-FS/experiments
 cd experiments
 
 # Install uv if not already installed
