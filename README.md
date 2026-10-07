@@ -440,3 +440,9 @@ experiments/
 ├── smiles-transformer/   # External SMILES transformer code
 └── MoLeR_checkpoint/     # Pre-trained MoLeR model
 ```
+
+## Licence
+
+Copyright (c) 2025 Carter Facey-Smith. All rights reserved.
+
+This code is shared for reference as part of Honours research at Monash University. Please [contact me](mailto:carterfaceysmith@gmail.com) before reusing it. Third-party components, such as the pre-trained MoLeR checkpoint, remain under their original licences.
