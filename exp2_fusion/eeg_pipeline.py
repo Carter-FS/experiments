@@ -567,6 +567,31 @@ def filter_to_standard_19(raw) -> "mne.io.BaseRaw":
     return raw
 
 
+def read_edf(filepath: Path) -> "mne.io.BaseRaw":
+    """Read an EDF file with preload, trying the annotation encodings in turn.
+
+    Raises:
+        ValueError: If the file cannot be read with any encoding.
+    """
+    filepath = Path(filepath)
+    raw = None
+    successful_encoding = None
+    for encoding in ("utf-8", "latin1", "iso-8859-1"):
+        try:
+            raw = mne.io.read_raw_edf(filepath, preload=True, verbose=False, encoding=encoding)
+            successful_encoding = encoding
+            break
+        except Exception as e:
+            logger.debug(f"Failed to load {filepath.name} with encoding {encoding}: {e}")
+            continue
+    if raw is None:
+        logger.error(f"Could not load EDF file with any encoding: {filepath}")
+        raise ValueError(f"Could not load EDF file: {filepath}")
+    if successful_encoding != "utf-8":
+        logger.debug(f"Loaded {filepath.name} with fallback encoding: {successful_encoding}")
+    return raw
+
+
 def load_edf(
     filepath: Path,
     target_sr: int = 200,
@@ -586,31 +611,7 @@ def load_edf(
     Returns:
         Tuple of (data array [channels x samples], sample rate, channel names).
     """
-    # Try different encodings for annotation channels
-    encodings = ["utf-8", "latin1", "iso-8859-1"]
-    raw = None
-    successful_encoding = None
-
-    for encoding in encodings:
-        try:
-            raw = mne.io.read_raw_edf(
-                filepath,
-                preload=True,
-                verbose=False,
-                encoding=encoding,
-            )
-            successful_encoding = encoding
-            break
-        except Exception as e:
-            logger.debug(f"Failed to load {filepath.name} with encoding {encoding}: {e}")
-            continue
-
-    if raw is None:
-        logger.error(f"Could not load EDF file with any encoding: {filepath}")
-        raise ValueError(f"Could not load EDF file: {filepath}")
-
-    if successful_encoding != "utf-8":
-        logger.debug(f"Loaded {filepath.name} with fallback encoding: {successful_encoding}")
+    raw = read_edf(filepath)
 
     if use_standard_19:
         # Stage C / cohort-portable path: name-filter to the 19 standard
