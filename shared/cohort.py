@@ -175,7 +175,7 @@ def add_stratification_columns(
     if not missing:
         return df
     if csv_path is None:
-        from shared.hep_cohort import ALFRED_CSV
+        from shared.paths import ALFRED_CSV
         csv_path = ALFRED_CSV
     raw = pd.read_csv(csv_path)
     raw["outcome"] = pd.to_numeric(raw["outcome"], errors="coerce")

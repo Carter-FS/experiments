@@ -37,10 +37,10 @@ from .config import (
 )
 from shared.cohort import dedupe_by_pid, filter_and_map_outcome, smiles_vector
 
-# Reuse exp4's clinical preprocessor + cleaning utilities, exp7's
-# get_valid_patient_eeg_pairs analogue is not used (the std-19 cache
-# the REVE features were extracted from already gives us the EEG-valid
-# patient set via the pids in the .npz).
+# Reuse exp4's clinical preprocessor + cleaning utilities. No EEG cache is
+# opened here: the REVE features were extracted from the version-2 cache
+# (shared.eeg_cache), so the pids in the .npz already give the EEG-valid
+# patient set.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from exp4_baseline.data_pipeline import (  # noqa: E402
     ClinicalFeaturePreprocessor,

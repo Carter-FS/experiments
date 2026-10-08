@@ -31,6 +31,8 @@ def load_eeg_metadata(cache_path: Path = EEG_CACHE_PATH) -> Dict[str, Dict]:
         Dict mapping patient ID to {n_windows, n_padded, n_channels, duration_sec}.
     """
     from shared.eeg_cache import load_cache
+    # Only window counts and durations are read, so the unscaled microvolt
+    # windows are enough; no model consumes these arrays.
     eeg_cache = load_cache(cache_path, "raw_uv")
 
     metadata = {}

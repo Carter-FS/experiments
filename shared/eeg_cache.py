@@ -53,7 +53,7 @@ from exp2_fusion.channels import STD_19_TEN_TWENTY, extract_patient_id
 from exp2_fusion.config import EEG_CONFIG, MAX_WINDOWS
 from exp2_fusion.config import N_CHANNELS as _CONFIG_N_CHANNELS
 from shared.cohort import dedupe_by_pid, filter_and_map_outcome
-from shared.hep_cohort import EXPERIMENTS_ROOT, find_asm_data_dir
+from shared.paths import EXPERIMENTS_ROOT, find_asm_data_dir
 
 logger = logging.getLogger(__name__)
 

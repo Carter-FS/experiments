@@ -24,10 +24,9 @@ EXPERIMENT_DIRS = sorted(p for p in REPO.glob("exp*") if p.is_dir()) + [REPO / "
 SUPERSEDED = re.compile(r"processed_eeg(?!\*)|preprocess_all_eeg\(|get_valid_patient_eeg_pairs\(|cache_eeg=|force_reprocess=")
 # A 27-channel default or literal input shape anywhere in the experiment code.
 OLD_MONTAGE = re.compile(r"(n_channels|n_eeg_channels|max_channels)\s*(:\s*int)?\s*=\s*27\b|,\s*27\s*,\s*2000\s*\)")
-# Files allowed to mention the old names: the pipeline that still defines the legacy
-# helpers, the superseded Stage C builder, exploratory analyses that are not rerun, and tests.
-ALLOWED = {"exp2_fusion/eeg_pipeline.py", "thesisStandalone/analysis/hep_eeg_preprocess.py",
-           "exp9_eeg_investigation/quality_analysis.py", "shared/eeg_cache.py"}
+# Files allowed to mention the old names: the superseded Stage C builder, the loader
+# (its refusal message names the legacy pickle) and tests.
+ALLOWED = {"thesisStandalone/analysis/hep_eeg_preprocess.py", "shared/eeg_cache.py"}
 
 
 def _python_files():
@@ -166,12 +165,12 @@ def test_model_and_dataset_defaults_are_19_channels():
     assert checked >= 8
 
 
-def test_importing_the_loader_does_not_import_mne():
+def test_importing_the_loader_does_not_import_mne_or_torch():
     import subprocess, sys
-    code = "import sys; import shared.eeg_cache; print('mne' in sys.modules)"
+    code = "import sys; import shared.eeg_cache; print('mne' in sys.modules, 'torch' in sys.modules)"
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=REPO)
     assert out.returncode == 0, out.stderr
-    assert out.stdout.strip() == "False"
+    assert out.stdout.strip() == "False False"
 
 
 def test_cache_dir_env_override(monkeypatch, tmp_path):

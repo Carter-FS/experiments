@@ -20,7 +20,7 @@ from .config import (
 # Import EEG processing from exp2
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from shared.cohort import dedupe_by_pid, smiles_vector
+from shared.cohort import OUTCOME_MAPPING, dedupe_by_pid, smiles_vector
 from shared.eeg_cache import CACHE_PATHS, load_cache, eeg_patient_frame
 
 EEG_CACHE_PATH = CACHE_PATHS["alfred"]
@@ -136,7 +136,7 @@ def load_csv_data(filepath: Path = CSV_PATH, filter_outcome: bool = True) -> pd.
 
     if filter_outcome:
         df = df[df["outcome"].isin([1, 2])].copy()
-        df["outcome"] = df["outcome"].astype(int)
+        df["outcome"] = df["outcome"].map(OUTCOME_MAPPING).astype(int)
 
     df = df.reset_index(drop=True)
     return df
