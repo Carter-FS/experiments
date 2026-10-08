@@ -48,7 +48,7 @@ Where to find them in the repository:
 
 ## 1a. Preprocessing: EEG conventions and the comparison with the supervisor's pipeline
 
-Compiled 2026-10-09 (docs/plan_eeg_fix_2026-10-09.md).
+Compiled 2026-10-09.
 The comparison is against Duong Nhu's `code-fury/eeg-foundation-model` (master,
 2026-09-14), whose benchmark pipeline for a pretrained encoder (the REVE benchmark) is
 `benchmark/preprocessing/preprocess_multichannel.py` run with `--bandpass-low 0.5
