@@ -1,0 +1,3 @@
+[submodule "smiles-transformer"]
+	path = smiles-transformer
+	url = https://github.com/DSPsleeporg/smiles-transformer.git
