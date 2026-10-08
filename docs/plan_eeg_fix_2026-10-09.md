@@ -158,8 +158,7 @@ with the ECG channels, this is sufficient to explain chance-level EEG discrimina
 
 ## 2. Decisions
 
-Recommendations are marked; items marked [confirm] need Carter's decision before the
-Addendum is written.
+Decisions D3 and D4 were taken by Carter on 2026-10-09 and are recorded in place.
 
 D1. Montage: the 19 standard 10-20 channels for every EEG experiment, Melbourne and
     HEP1 alike. The 27-channel cache is retired. Rationale: it is the only channel set
@@ -170,26 +169,36 @@ D1. Montage: the 19 standard 10-20 channels for every EEG experiment, Melbourne 
     are computed by the new cache builder and frozen in Addendum C before any run.
 
 D2. Storage: the new cache stores the 19-channel signal in microvolts, unnormalised
-    (float32, (120, 19, 2000) with the padding mask, as now), plus per-recording
-    per-channel location and scale statistics computed on the whole extracted 20-minute
-    segment before windowing: `loc` = median, `scale` = 1.4826 x MAD. Normalisation is
-    applied by the loader, so conventions can be switched without rebuilding.
+    (float32, (120, 19, 2000) with the padding mask, as now). Normalisation is applied by the loader, so conventions can be switched without
+    rebuilding.
 
-D3. Normalisation conventions (applied by the loader, per recording, per channel):
-    - `robust15` (from-scratch encoders and REVE): (x - loc) / scale, clipped to
-      [-15, 15]. Recommended as the single convention for every trained-from-scratch
-      model and for REVE.
-    - `labram` (pretrained LaBraM): clip x in microvolts to [loc - 15 scale, loc + 15
-      scale], then divide by 100. No z-score, because the pretrained weights expect
-      microvolts / 100.
-    - Flat channels (scale < 0.01 uV): set to zero and flagged in the cache.
-    Rejected alternatives: per-window z-score (the current Stage C convention; discards
-    within-recording amplitude information and whitens artefact windows); plain-SD
-    z-score per recording (REVE's literal convention; one 0.2 V artefact inflates the SD
-    by about 500x and silences the recording). The robust scale deviates from REVE's
-    plain SD; this is a documented, deliberate choice [confirm].
-    Statistics come from the recording itself, never from other patients, so there is no
-    fit on training data and no leakage. Window-level artefact masking is out of scope.
+D3. Normalisation conventions (applied by the loader). Decided 2026-10-09 by Carter:
+    follow the supervisor's repository (code-fury/eeg-foundation-model) where it has a
+    convention. It does. Its benchmark pipeline for a pretrained encoder (the REVE
+    benchmark: `benchmark/preprocessing/preprocess_multichannel.py`, `zscore_norm_epoch`
+    at lines 416-420, run with `--normalization zscore --resampling-frequency 200`)
+    z-scores each epoch per channel over the time axis, in microvolts, with a 1e-6 floor
+    on the standard deviation and no clipping. Its pretraining pipeline uses a causal
+    exponential-moving RMS instead (`ema_norm_buffered`, floor 0.02 uV); that belongs to
+    his own model and is not used here. An independent audit of our pipeline against
+    his (2026-10-09, recorded in findings/training_configurations.md, Preprocessing)
+    found no robust-scale or clipping precedent in his code.
+    - `zscore_window` (from-scratch encoders and REVE): per 10-second window, per
+      channel, (x - mean) / max(sd, 1e-6) over the window's 2000 samples, in microvolts,
+      no clipping. Identical to Duong's `zscore_norm_epoch`, and to the Stage C caches
+      except that those clipped the raw signal at 5 SD first (dropped to match Duong).
+    - `labram` (pretrained LaBraM): microvolts divided by 100, no z-score, because the
+      pretrained weights expect that scale (official `engine_for_finetuning.py`); no
+      clipping, as in the official pipeline. Nothing in Duong's repository covers LaBraM.
+    - A window whose standard deviation is below the floor in a channel becomes zero
+      in that channel; whole flat channels are counted in the sidecar.
+    - Leading flat segment: as in Duong's `find_signal_start`, the 300 s skip starts
+      from the first 100 s chunk whose standard deviation exceeds a tiny threshold, so a
+      recording that begins with a flat lead-in is not windowed from the flat part. The
+      number of recordings affected is reported in the sidecar.
+    Statistics come from the window itself, never from other patients, so nothing is
+    fitted on training data. The earlier draft of this plan proposed a per-recording
+    robust (median/MAD) scale clipped at 15; superseded by Carter's decision.
 
 D4. LaBraM arms:
     - L1 (primary replacement for the "LaBraM" row): frozen pretrained LaBraM-base as a
@@ -204,18 +213,19 @@ D4. LaBraM arms:
       AdamW, peak lr 5e-4 with 5 warm-up epochs then cosine, layer decay 0.65, weight
       decay 0.05, drop path 0.1, batch of 1 patient (windows chunked), gradient
       accumulation to 8 patients, at most 50 epochs, epoch chosen by the refit protocol
-      as for every other model. About 80-100 GPU-hours for 5 seeds. [confirm: run L2
-      now, or after L1 results]
-    - The from-scratch LaBraM-architecture arm is kept in the encoder comparison,
-      relabelled "LaBraM architecture, random initialisation (2 layers)", because the
-      contrast with L1 isolates the value of pretraining. [confirm]
+      as for every other model. About 80-100 GPU-hours for 5 seeds. Runs after the
+      frozen-feature (L1) results are in (Carter, 2026-10-09).
+    - The from-scratch LaBraM-architecture arm is rerun on the corrected inputs and
+      kept in the encoder comparison, relabelled "LaBraM architecture, random
+      initialisation (2 layers)", so the contrast with L1 isolates the value of
+      pretraining (Carter, 2026-10-09).
 
 D5. Fusion models: EEG2Vec trained from scratch stays the pre-specified EEG branch of
     the main table (no change to the pre-registered encoder set). Two feature-based
     full-model variants are added beside exp15 (REVE features): exp15-style quad with
     LaBraM L1 features. Both are reported with exp15 in the Supplementary.
 
-D6. REVE: features re-extracted from the new cache under `robust15` (same code path,
+D6. REVE: features re-extracted from the new cache under `zscore_window` (same code path,
     `reve_features_v2_*.npz`). exp15, the REVE encoder row, exp18 and the HEP EEG scripts
     all move to the new caches and features.
 
@@ -228,25 +238,29 @@ D8. Everything else is frozen: outer and inner CV, refit protocol, seeds, hyperp
 
 ## 3. Implementation
 
-Work in the public `experiments` repo on a branch `eeg-fix`; no patient data in git.
-File names below are proposals; keep them if nothing better comes up.
+Work in the public `experiments` repo; no patient data in git. Each step is a gate:
+after it is implemented, two fresh independent reviewers (10 minutes each) check that
+it fully resolves its problem and that nothing is unimplemented or lazily done; the next
+step starts only when both pass (Carter, 2026-10-09). The paper's EEG-dependent
+statements are marked `\tbc` until all results are in.
 
 ### S1. `shared/eeg_cache.py` (new)
 
-- `build_cache(cohort, edf_index, out_path, notch_hz)`: for each recording,
-  `EEGPreprocessor(use_standard_19=True, notch_freq=notch_hz, normalisation="none")`
-  reused as is for loading, the 19-channel filter, 0.1-75 Hz bandpass, notch, 200 Hz,
-  the 300 s skip, the 1200 s segment, the 600 s minimum and the 10 s windows. Convert
-  volts to microvolts (x 1e6) after `extract_time_window`, compute `loc` and `scale` on
-  the extracted segment, then window. Entry per patient:
+- `build_cache(cohort, edf_index, out_path, notch_hz)`: for each recording, the
+  existing functions of `exp2_fusion/eeg_pipeline.py` (EDF reading, the 19-channel
+  filter, resampling to 200 Hz, the 0.1-75 Hz bandpass and the notch) plus Duong's
+  leading-flat detection, then
+  the 300 s skip (after the leading-flat detection of D3), the 1200 s segment, the
+  600 s minimum and the 10 s windows. Convert volts to microvolts (x 1e6) after
+  `extract_time_window`, then window. Entry per patient:
   `{"windows_uv": float32 (120, 19, 2000), "padding_mask": bool (120,), "ch_names":
-  STD_19, "loc": (19,), "scale": (19,), "flat": bool (19,), "sfreq": 200,
+  STD_19, "sfreq": 200, "signal_start_s": float,
   "version": 2, "source_sha256": <sha256 of the EDF bytes>}`. Also write a sidecar
   `*.meta.json` with aggregate statistics only (n recordings, median SD in uV, n flat
   channels, n rejected and why).
   Output: `outputs/eeg_cache/eeg19_v2_alfred.pkl`, `outputs/eeg_cache/eeg19_v2_hep.pkl`
   (HEP1 at 60 Hz notch, as now).
-- `load_cache(path, convention)` with `convention in {"robust15", "labram", "raw_uv"}`
+- `load_cache(path, convention)` with `convention in {"zscore_window", "labram", "raw_uv"}`
   returning the same `{pid: (windows, padding_mask)}` structure every consumer expects
   today, normalised as in D3, plus `cache_info(path)` for `n_channels`, `ch_names`,
   cohort counts. It raises on a file without `version == 2` unless
@@ -260,16 +274,16 @@ Replace direct pickle loads and hard-coded channel counts:
 
 | Consumer | Today | Change |
 |---|---|---|
-| `exp2_fusion/data_pipeline.py:235` `preprocess_all_eeg` | builds/loads `processed_eeg.pkl` | `load_cache(ALFRED_V2, "robust15")` |
+| `exp2_fusion/data_pipeline.py:235` `preprocess_all_eeg` | builds/loads `processed_eeg.pkl` | `load_cache(ALFRED_V2, "zscore_window")` |
 | `exp3_fusion/data_pipeline.py:292` | same | same |
 | `exp5_clinical_fusion/data_pipeline.py:144`, `exp6_clinical_triple/...:144`, `exp7_all_modalities/...:126` `load_eeg_data` | pickle of `EEG_CACHE_PATH` | `load_cache` |
 | `exp5/exp6/exp7/exp9/exp8 config.py` `EEG_CACHE_PATH`, `"n_channels": 27` | 27-channel | point at the v2 path; `n_channels` from `cache_info` |
 | `exp9_eeg_investigation/run_experiments.py:236` `get_max_channels` | derived from data | keep (will give 19) |
 | `exp11`, `exp16`, `exp17` | via exp7/exp9 pipelines | inherit |
-| `exp18_mixed_cohort/config.py:79-80` | std19 caches | v2 caches, `robust15` |
+| `exp18_mixed_cohort/config.py:79-80` | std19 caches | v2 caches, `zscore_window` |
 | `shared/portable_models.py:268 load_eeg_cache`, `N_CHANNELS = 19` | std19 | `load_cache`; keep 19 |
 | `thesisStandalone/analysis/hep_external_validation_eeg.py:74-75`, `hep_reduced_external_validation.py` | std19 | v2 |
-| `thesisStandalone/analysis/reve_extract_features.py` | std19 | v2 with `robust15`; output `reve_features_v2_*.npz` |
+| `thesisStandalone/analysis/reve_extract_features.py` | std19 | v2 with `zscore_window`; output `reve_features_v2_*.npz` |
 | `exp15_reve_quad_mlp/config.py:22` | `reve_features_alfred.npz` | `--feature-set reve_v2|labram_v2` |
 | Defaults `n_channels: int = 27` in `eeg_encoders.py`, `fusion.py`, `triple_mlp.py`, `triple_fusemoe.py`, `exp5/6/7 models.py`, `exp7/data_pipeline.py max_channels` | 27 | 19 (and always passed explicitly from `cache_info`) |
 
@@ -318,17 +332,17 @@ or frozen) and `encoder_type="precomputed"` (identity over (B, W, D) features), 
   `encoder_labram_finetune` (L2). The `precomputed` encoder reads the npz through the
   exp15 loader generalised to a `feature_set` argument.
 - Each precomputed arm declares its own input convention; the raw-EEG arms read
-  `robust15`. One cache, one loader, one place to change.
+  `zscore_window`. One cache, one loader, one place to change.
 - `exp15` gains `--feature-set {reve_v2, labram_v2}`.
 
 ### S6. Tests (`shared/tests/test_eeg_cache.py`, `test_labram_pretrained.py`)
 
 - Builder: on a synthetic 25-channel RawArray exported to EDF (MNE `export_raw`), the
   cache has exactly `STD_19` in order, non-EEG channels are absent, units are
-  microvolts (SD of a 20 uV synthetic sine is 20 within 5%), `loc`/`scale` equal the
-  median and 1.4826 MAD of the segment, a flat channel is flagged and zeroed.
-- Loader: `robust15` gives median 0 and MAD 1 per channel and |x| <= 15; `labram` equals
-  clip(x) / 100; a version-1 pickle raises; `cache_info` reports 19 channels.
+  microvolts (SD of a 20 uV synthetic sine is 20 within 5%), a leading flat segment
+  is skipped, a flat channel is counted.
+- Loader: `zscore_window` gives mean 0 and SD 1 per window and channel; `labram` equals
+  x / 100; a version-1 pickle raises; `cache_info` reports 19 channels.
 - Real-cache aggregate check (not in CI, run once and recorded in the sidecar): median
   per-window SD in microvolts between 3 and 60 for both cohorts; count of flat
   channels.
@@ -449,9 +463,9 @@ file, stays as it is.
 - L2 memory: 120 windows x 191 tokens x 200 dims x 12 layers at batch 1 patient is a
   few GB of activations; chunking must keep the whole patient in the graph (no
   checkpointing across chunks) or use gradient checkpointing.
-- Robust scaling versus REVE's plain SD: deliberate (D3); if Carter prefers literal
-  parity, use plain SD with clipping at 15 and accept that artefact-heavy recordings
-  are silenced; the loader makes this a one-line switch.
+- Per-window z-scoring (Duong's benchmark convention) differs from REVE's own
+  per-session z-score clipped at 15; documented, and a per-session convention is a
+  one-line addition to the loader if ever wanted.
 - Artefact windows are not masked; a window-level artefact flag is a possible later
   addition and is not pre-registered here.
 - The driver's EEG items also train non-EEG configurations inside the same experiment

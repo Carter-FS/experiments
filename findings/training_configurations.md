@@ -46,6 +46,51 @@ Where to find them in the repository:
 | Frozen pretrained models | ClinicalBERT, PubMedBERT, ChemBERTa, SMILES Transformer (embeddings precomputed); REVE-base (features precomputed, exp15 and REVE standalone only) | |
 
 
+## 1a. Preprocessing: EEG conventions and the comparison with the supervisor's pipeline
+
+Added 2026-10-09 after the EEG defects were found (docs/plan_eeg_fix_2026-10-09.md).
+The comparison is against Duong Nhu's `code-fury/eeg-foundation-model` (master,
+2026-09-14), whose benchmark pipeline for a pretrained encoder (the REVE benchmark) is
+`benchmark/preprocessing/preprocess_multichannel.py` run with `--bandpass-low 0.5
+--bandpass-high 70 --resampling-frequency 200 --power-noise-frequency 60
+--epoch-length 16 --normalization zscore`.
+
+Decision (Carter, 2026-10-09): follow Duong's convention where one exists. The EEG rerun
+therefore uses his per-epoch, per-channel z-score in microvolts (`zscore_norm_epoch`:
+mean and standard deviation over the time axis of each window, floor 1e-6, no clipping),
+applied to each 10-second window at load time, for every trained-from-scratch encoder
+and for REVE; the pretrained LaBraM input is microvolts divided by 100 as in its official
+code, which Duong's repository does not cover. The earlier proposal of a per-recording
+robust (median/MAD) scale with clipping at 15 standard deviations was dropped because
+Duong's code has no robust-scale or clipping precedent.
+
+| Aspect | Ours (rerun) | Duong (benchmark z-score path) | Assessment |
+|---|---|---|---|
+| Units | microvolts (`get_data(units="uV")`) | microvolts | same |
+| Amplitude normalisation | per-window (10 s), per-channel z-score, floor 1e-6, no clipping | per-epoch (16 s), per-channel z-score, floor 1e-6, no clipping | same convention; window length differs (ours pre-registered) |
+| Where statistics come from | the window itself | the epoch itself (his own model: causal per-recording EMA RMS) | same; nothing fitted on the training split in either |
+| Band-pass | 0.1-75 Hz, zero-phase FIR (MNE), after resampling | 0.5-70 Hz, causal Butterworth order 4, before resampling | differs; ours follows LaBraM's pretraining band and is pre-registered; kept |
+| Mains | FIR notch 50 Hz (60 Hz HEP1) | ZapLine (`meegkit.dss.dss_line`) | differs; both standard; kept |
+| Resampling | MNE `resample` to 200 Hz | `resample_poly` to 200 Hz | same rate |
+| Segment | skip 300 s, next 1200 s, reject under 600 s | skip leading flat data, then 300 s, drop the last 10 s, use the rest (his loader then takes at most 38 epochs) | ours pre-registered; the leading-flat detection is adopted in the rerun |
+| Epochs | 10 s, no overlap, at most 120, zero-padded and masked | 16 s (8 s TUSZ), zero-padded and masked | differs; ours pre-registered |
+| Channels | 19 standard 10-20 by name, canonical order, recording dropped if any is missing | the same 19 by name (TUH names), zero-filled with a mask if missing | same set; order differs (irrelevant, encoders resolve by name or position); missing-channel policy stricter in ours |
+| Old channel names | T3/T4/T5/T6 to T7/T8/P7/P8 | same aliases | same |
+| Reference | as recorded | as recorded | same |
+| Loss and balance | class-weighted cross-entropy | unweighted BCE with a balanced batch sampler | differs; two routes to the same end |
+| Optimiser | AdamW, weight decay 1e-4 | AdamW, lr 1e-4, weight decay 1e-4 (v2: 1e-3 with cosine) | close |
+| Precision | fp32 | bf16-mixed, torch.compile | differs; fp32 kept for reproducibility |
+| Model selection | inner 5-fold CV, refit, patience 20 | early stopping on validation AP, patience 10, best checkpoint | ours stricter |
+| Gradient clipping | 1.0 | none | differs; kept |
+| Window aggregation | 2-layer transformer with sinusoidal positions, masked mean | 6-layer pre-norm transformer, learned-query pooling (8 queries) | differs; design choice |
+| REVE features | attention-pooled 512 per window, frozen | all tokens kept (19 x 17 x 512), pooled in the classifier, frozen | differs; frozen use matches |
+| FuseMoE | adapted from Duong's `models/fuse_moe.py`: same Laplace gating, same unweighted top-k sum, mutual-information loss | reference | core identical; the unweighted sum is inherited from the reference |
+
+Differences that should not have existed, all fixed by the EEG rerun: the 27-channel cache
+in volts with no normalisation; the EMG, PG, ECG and ear-reference channels in it; the
+paper's "z-scored per window" and "pretrained LaBraM" statements; the absence of
+leading-flat detection.
+
 ## 2. Main configurations (Table 2 of the paper)
 
 All late-fusion MLPs: each modality passes through Linear to 64, ReLU, LayerNorm and
