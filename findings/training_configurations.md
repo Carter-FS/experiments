@@ -48,21 +48,18 @@ Where to find them in the repository:
 
 ## 1a. Preprocessing: EEG conventions and the comparison with the supervisor's pipeline
 
-Added 2026-10-09 after the EEG defects were found (docs/plan_eeg_fix_2026-10-09.md).
+Compiled 2026-10-09 (docs/plan_eeg_fix_2026-10-09.md).
 The comparison is against Duong Nhu's `code-fury/eeg-foundation-model` (master,
 2026-09-14), whose benchmark pipeline for a pretrained encoder (the REVE benchmark) is
 `benchmark/preprocessing/preprocess_multichannel.py` run with `--bandpass-low 0.5
 --bandpass-high 70 --resampling-frequency 200 --power-noise-frequency 60
 --epoch-length 16 --normalization zscore`.
 
-Decision (Carter, 2026-10-09): follow Duong's convention where one exists. The EEG rerun
-therefore uses his per-epoch, per-channel z-score in microvolts (`zscore_norm_epoch`:
-mean and standard deviation over the time axis of each window, floor 1e-6, no clipping),
-applied to each 10-second window at load time, for every trained-from-scratch encoder
-and for REVE; the pretrained LaBraM input is microvolts divided by 100 as in its official
-code, which Duong's repository does not cover. The earlier proposal of a per-recording
-robust (median/MAD) scale with clipping at 15 standard deviations was dropped because
-Duong's code has no robust-scale or clipping precedent.
+The EEG rerun uses the per-epoch, per-channel z-score of that pipeline
+(`zscore_norm_epoch`: mean and standard deviation over the time axis of each window, floor
+1e-6, no clipping, in microvolts), applied to each 10-second window at load time, for every
+trained-from-scratch encoder and for REVE. The pretrained LaBraM input is microvolts
+divided by 100, as in its official code.
 
 | Aspect | Ours (rerun) | Duong (benchmark z-score path) | Assessment |
 |---|---|---|---|
