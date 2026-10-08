@@ -15,3 +15,6 @@ meeting_notes/
 docs/plans/
 .worktrees/
 thesis/
+
+# Local working documents (plans, scratch notes): never pushed
+docs/local/
