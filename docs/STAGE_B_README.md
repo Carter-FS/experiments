@@ -2,7 +2,7 @@
 
 > **Reruns:** `--asm-balance weighted` is now wired into every table
 > experiment and the whole set regenerates via `rerun_all_oof.sh` (see the
-> "Consistent OOF rerun" section in `README.md`). `stratified_batch` remains
+> "Reproducing the results table" section in [`README.md`](../README.md#reproducing-the-results-table)). `stratified_batch` remains
 > available only in the experiments that implement the sampler (exp3/5/6/7/15).
 
 Addresses Duong's follow-up email to the Phase 3b best-ASM simulation

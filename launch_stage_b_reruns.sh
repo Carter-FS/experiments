@@ -7,7 +7,7 @@
 # the only mode that produces per-ASM counterfactual probabilities for
 # the best-ASM simulation comparison.
 #
-# Exp3a, Exp5a, Exp6a wiring is pending (see STAGE_B_README.md). When
+# Exp3a, Exp5a, Exp6a wiring is pending (see docs/STAGE_B_README.md). When
 # wired, add them to the EXPERIMENTS array below.
 #
 # Usage:

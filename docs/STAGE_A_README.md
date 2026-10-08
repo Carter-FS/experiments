@@ -2,7 +2,7 @@
 
 > **Superseded for reruns.** The rerun launch/cascade notes below predate the
 > data-leakage fix. Use `rerun_all_oof.sh` + `shared/verify_oof.py` (see the
-> "Consistent OOF rerun" section in `README.md`). This file is kept for the
+> "Reproducing the results table" section in [`README.md`](../README.md#reproducing-the-results-table)). This file is kept for the
 > prediction-logger design notes only.
 
 Purpose: enable patient-level OOF predictions to be dumped from every
