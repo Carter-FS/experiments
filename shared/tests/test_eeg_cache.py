@@ -149,6 +149,9 @@ def test_write_load_and_info_round_trip(tmp_path):
     assert abs(float(w[~m].mean())) < 1e-4
     info = C.cache_info(path)
     assert info["version"] == 2 and info["n_recordings"] == 2 and info["n_channels"] == 19
+    assert info["samples_per_window"] == 2000
+    C.sidecar_path(path).unlink()                                   # pickle fallback
+    assert C.cache_info(path) == info
     assert not list(tmp_path.glob(".*.partial"))
 
 
@@ -208,6 +211,7 @@ def test_build_cache_with_synthetic_reader(tmp_path):
     assert meta["skipped"] == {"missing_channels": 0, "units": 0, "flat": 0, "too_short": 1,
                                "non_finite": 0, "read_error": 0}
     assert meta["incomplete"] is False and meta["n_flat_valid_windows"] == 0
+    assert meta["samples_per_window"] == 2000 and meta["n_channels"] == 19
     assert meta["n_recordings_with_leading_flat_segment"] == 1
     assert meta["notch_hz"] == 50.0 and meta["units"] == "uV" and meta["ch_names"] == list(C.CH_NAMES)
     loaded = C.load_cache(out, "labram")
@@ -229,7 +233,7 @@ def test_non_finite_samples_skip_the_recording():
 
 def test_non_voltage_channel_skips_the_recording():
     raw = synthetic_raw(duration_s=700.0)
-    raw._orig_units = {ch: "uV" for ch in raw.ch_names}
+    raw._orig_units = {ch: " UV " for ch in raw.ch_names}        # case and whitespace are tolerated
     raw._orig_units["Cz"] = "mmHg"
     with pytest.raises(C.SkipRecording) as exc:
         C.process_raw(raw, notch_hz=50.0)
@@ -274,3 +278,29 @@ def test_edf_round_trip_scales_to_microvolts_per_channel(tmp_path):
     assert sd[18] == pytest.approx(5.0 / np.sqrt(2), rel=0.05)      # O2 is row 18
     assert sd.max() < 20.0                                           # the 1 mV ECG is gone
     assert rec.n_valid == 40
+
+
+def test_expect_files_marks_an_incomplete_copy(tmp_path, caplog):
+    (tmp_path / "a_1_1-1-2020.edf").write_bytes(b"x")
+    out = tmp_path / "cache.pkl"
+    with caplog.at_level("WARNING", logger="shared.eeg_cache"):
+        meta = C.build_cache("hep", out, reader=lambda p: synthetic_raw(duration_s=700.0),
+                             pairs=[("a", tmp_path / "a_1_1-1-2020.edf")], expect_files=5)
+    assert meta["incomplete"] is True and meta["expect_files"] == 5 and meta["notch_hz"] == 60.0
+    assert any("expected 5" in rec.message for rec in caplog.records)
+
+
+def test_flat_channel_is_counted_in_the_sidecar():
+    e = _entry(4, n_valid=20)
+    e["windows_uv"][:, 7, :] = 0.0                         # one channel flat in every window
+    side = C.summarise({"x": e})
+    assert side["n_recordings_with_flat_channel"] == 1 and side["n_flat_valid_windows"] == 0
+
+
+def test_corrupt_sidecar_falls_back_to_the_pickle(tmp_path):
+    path = tmp_path / "c.pkl"
+    recs = {"a": _entry(0)}
+    C.write_cache(path, {"version": C.CACHE_VERSION, "cohort": "alfred"}, recs)
+    C.sidecar_path(path).write_text("{not json")
+    info = C.cache_info(path)
+    assert info["n_recordings"] == 1 and info["n_channels"] == 19

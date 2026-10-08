@@ -83,7 +83,8 @@ COHORTS: Dict[str, Dict[str, object]] = {
 CACHE_DIR = EXPERIMENTS_ROOT / "outputs" / "eeg_cache"
 CACHE_PATHS = {"alfred": CACHE_DIR / "eeg19_v2_alfred.pkl", "hep": CACHE_DIR / "eeg19_v2_hep.pkl"}
 SKIP_REASONS = ("missing_channels", "units", "flat", "too_short", "non_finite", "read_error")
-VOLTAGE_UNITS = {"V", "mV", "uV", "\u00b5V", "\u03bcV", "nV"}   # EDF physical dimensions MNE scales to volts
+# EDF physical dimensions MNE scales to volts (lower case); "v" is already volts.
+VOLTAGE_UNITS = {"v", "mv", "uv", "\u00b5v", "\u03bcv"}
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +205,8 @@ def _require_voltage_channels(raw) -> None:
     (synthetic ``RawArray``) are taken to be in volts, which is MNE's convention.
     """
     orig_units = getattr(raw, "_orig_units", None) or {}
-    bad = [ch for ch in raw.ch_names if orig_units.get(ch, "V") not in VOLTAGE_UNITS]
+    bad = [ch for ch in raw.ch_names
+           if str(orig_units.get(ch, "V")).strip().lower() not in VOLTAGE_UNITS]
     if bad:
         raise SkipRecording("units", f"{len(bad)} channel(s) without a voltage unit")
     not_eeg = [ch for ch, kind in zip(raw.ch_names, raw.get_channel_types()) if kind != "eeg"]
@@ -373,10 +375,11 @@ def build_cache(cohort: str, out_path: Optional[Path] = None, limit: Optional[in
         pairs, discovery = list(pairs), {"patients_with_edf": len(pairs)}
     if limit is not None:
         pairs = pairs[:limit]
-    incomplete = expect_files is not None and discovery.get("edf_files", len(pairs)) < expect_files
+    n_files = discovery.get("edf_files", len(pairs))
+    incomplete = expect_files is not None and n_files < expect_files
     if incomplete:
-        logger.warning("%s: found %s EDF files, expected %d; the cache will be incomplete",
-                       cohort, discovery.get("edf_files"), expect_files)
+        logger.warning("%s: found %d EDF files, expected %d; the cache will be incomplete",
+                       cohort, n_files, expect_files)
     notch_hz = float(spec["notch_hz"])
 
     recordings: Dict[str, dict] = {}
@@ -424,12 +427,12 @@ def build_cache(cohort: str, out_path: Optional[Path] = None, limit: Optional[in
         "skipped": skipped,
         **summarise(recordings),
     }
-    write_cache(out_path, meta, recordings)
-    return meta
+    return write_cache(out_path, meta, recordings)
 
 
-def write_cache(path: Path, meta: dict, recordings: Dict[str, dict]) -> None:
-    """Write the cache atomically plus its sidecar ``<path>.meta.json``."""
+def write_cache(path: Path, meta: dict, recordings: Dict[str, dict]) -> dict:
+    """Write the cache atomically plus its sidecar ``<path>.meta.json``; returns the
+    metadata as written (``meta`` plus the channel and shape fields)."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     meta = {**meta, **_shape_fields(recordings)}
@@ -443,7 +446,20 @@ def write_cache(path: Path, meta: dict, recordings: Dict[str, dict]) -> None:
         if os.path.exists(tmp):
             os.remove(tmp)
         raise
-    sidecar_path(path).write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n")
+    _write_text_atomic(sidecar_path(path), json.dumps(meta, indent=2, sort_keys=True) + "\n")
+    return meta
+
+
+def _write_text_atomic(path: Path, text: str) -> None:
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".partial")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
 
 
 def _shape_fields(recordings: Dict[str, dict]) -> dict:
@@ -534,7 +550,10 @@ def cache_info(path: Path) -> dict:
     path = Path(path)
     side = sidecar_path(path)
     if side.exists() and path.exists() and side.stat().st_mtime >= path.stat().st_mtime:
-        meta = json.loads(side.read_text())
+        try:
+            meta = json.loads(side.read_text())
+        except json.JSONDecodeError:
+            meta = {}
         if meta.get("version") == CACHE_VERSION:
             return meta
     payload = _read_payload(path, allow_legacy=False)
