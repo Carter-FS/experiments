@@ -631,3 +631,22 @@ hoc:
   is the same model as `aggregator_attention` by construction and is reported
   once. GPU results differ between M3 node types at the level of individual
   predictions, so run-to-run differences of about 0.02 AUC are noise.
+
+### B.12 (2026-10-09, after the results): inner-fold stratification labels
+
+A configuration audit on 2026-10-09, after every result had been produced,
+re-checked the inner folds against the plan. B.2 step 1 specifies inner folds
+"on the same stratification labels as the outer split" (outcome, focal and
+sex); B.9 amended this before any Addendum B run to the outcome alone, with
+exp18 using its outcome x cohort key. The code matches B.9, not the B.2 text:
+`shared/epoch_selection.py:56-65` builds
+`StratifiedKFold(5, shuffle=True, random_state=seed + fold)` (seed = the
+active repeat seed) on the labels each runner passes, which are the outcome
+vector (for example `exp4_baseline/training.py:339`,
+`exp7_all_modalities/training.py:507`, `exp1_fusion/training.py:393`), and
+`exp18_mixed_cohort/run_experiments.py:141` passes the outcome x cohort key
+built at `exp18_mixed_cohort/data_pipeline.py:128`; the outer split stays
+multilabel (`shared/cv_splits.py:94-114`; exp18 joint key at
+`run_experiments.py:170-171`). Recorded here so that the Methods statement has
+a single source. No rerun is planned for this item: the inner folds choose only
+the epoch count and the threshold, and the outer test folds are unaffected.
