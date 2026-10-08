@@ -1,13 +1,13 @@
 """Data pipeline for Experiment 3: LLM + EEG + SMILES triple fusion."""
 
 import logging
-import pickle
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 import torch
+from exp2_fusion.config import N_CHANNELS
 from torch.utils.data import Dataset, DataLoader
 
 from .config import (
@@ -23,8 +23,11 @@ from .config import (
 # Import EEG processing from exp2
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from exp2_fusion.eeg_pipeline import EEGPreprocessor, get_valid_patient_eeg_pairs
 from shared.cohort import dedupe_by_pid, smiles_vector
+from shared.eeg_cache import CACHE_PATHS, load_cache, eeg_patient_frame
+
+EEG_CACHE_PATH = CACHE_PATHS["alfred"]
+EEG_CONVENTION = "zscore_window"   # per-window, per-channel z-score in microvolts
 
 logger = logging.getLogger("exp3")
 
@@ -41,7 +44,7 @@ class TripleModalityDataset(Dataset):
         smiles_indices: Dict[str, int],
         labels: Dict[str, int],
         asm_drugs: Dict[str, str],
-        max_channels: int = 27,
+        max_channels: int = N_CHANNELS,
     ):
         """Initialize dataset.
 
@@ -200,85 +203,28 @@ def load_smiles_embeddings(smiles_model: str) -> Tuple[np.ndarray, Dict[str, int
     return embeddings, index_map
 
 
-def preprocess_all_eeg(
-    df: pd.DataFrame,
-    cache_path: Optional[Path] = None,
-    force_reprocess: bool = False,
-) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
-    """Preprocess all EEG files and optionally cache results."""
-    # Try to load from cache
-    if cache_path and cache_path.exists() and not force_reprocess:
-        logger.info(f"Loading cached EEG data from {cache_path}")
-        with open(cache_path, "rb") as f:
-            cached_data = pickle.load(f)
-        logger.info(f"Loaded {len(cached_data)} patients from cache")
-        return cached_data
-
-    logger.info(f"Preprocessing EEG data for {len(df)} patients...")
-    preprocessor = EEGPreprocessor()
-    eeg_data = {}
-    skipped = 0
-
-    for idx, row in df.iterrows():
-        pid = str(row["pid"])
-        eeg_path = Path(row["eeg_path"])
-
-        try:
-            result = preprocessor.process(eeg_path)
-            if result is None:
-                skipped += 1
-                continue
-
-            windows, padding_mask, n_channels = result
-            eeg_data[pid] = (windows, padding_mask)
-
-            if len(eeg_data) % 20 == 0:
-                logger.info(f"  Processed {len(eeg_data)} / {len(df)} patients...")
-
-        except Exception as e:
-            logger.warning(f"Error processing {pid}: {e}")
-            skipped += 1
-            continue
-
-    logger.info(f"EEG preprocessing complete: {len(eeg_data)} processed, {skipped} skipped")
-
-    # Cache results
-    if cache_path:
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(cache_path, "wb") as f:
-            pickle.dump(eeg_data, f)
-        logger.info(f"Cached EEG data to {cache_path}")
-
-    return eeg_data
-
-
-def get_max_channels(eeg_data: Dict[str, Tuple[np.ndarray, np.ndarray]]) -> int:
-    """Get maximum number of channels across all EEG data."""
-    return max(data[0].shape[1] for data in eeg_data.values())
-
-
 def prepare_data(
     text_model: str = "clinicalbert",
     smiles_model: str = "chemberta",
-    cache_eeg: bool = True,
-    force_reprocess: bool = False,
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, Tuple[np.ndarray, np.ndarray]], np.ndarray, Dict[str, int], pd.DataFrame]:
     """Prepare all data for training.
+
+    The EEG windows come from the version-2 cache (``shared.eeg_cache``), normalised
+    per window and channel at load time; the cohort is every Melbourne patient with a
+    usable outcome, a cached recording and a text embedding.
 
     Args:
         text_model: 'clinicalbert' or 'pubmedbert'
         smiles_model: 'chemberta' or 'smilestrf'
-        cache_eeg: Whether to cache preprocessed EEG data.
-        force_reprocess: Force reprocess EEG even if cache exists.
 
     Returns:
         Tuple of (text_embeddings, eeg_data, smiles_embeddings, smiles_indices, df).
     """
     logger.info(f"Preparing data: text={text_model}, smiles={smiles_model}")
-
-    # Get valid patient-EEG pairs
-    df = get_valid_patient_eeg_pairs()
-    logger.info(f"Found {len(df)} patients with valid EEG files and outcomes")
+    eeg_data = load_cache(EEG_CACHE_PATH, EEG_CONVENTION)
+    logger.info(f"Loaded EEG windows for {len(eeg_data)} patients from {EEG_CACHE_PATH}")
+    df = eeg_patient_frame(eeg_data.keys())
+    logger.info(f"Found {len(df)} patients with a cached recording and a usable outcome")
 
     # Load SMILES embeddings
     smiles_embeddings, smiles_indices = load_smiles_embeddings(smiles_model)
@@ -287,10 +233,6 @@ def prepare_data(
     # Load text embeddings
     text_embeddings = load_text_embeddings(text_model, df)
     logger.info(f"Loaded text embeddings for {len(text_embeddings)} patients")
-
-    # Preprocess EEG data
-    cache_path = OUTPUTS_DIR / "eeg_cache" / "processed_eeg.pkl" if cache_eeg else None
-    eeg_data = preprocess_all_eeg(df, cache_path, force_reprocess)
 
     # Find intersection of all three modalities
     common_pids = set(text_embeddings.keys()) & set(eeg_data.keys())
@@ -369,7 +311,6 @@ def test_data_pipeline():
     text_emb, eeg_data, smiles_emb, smiles_idx, df = prepare_data(
         text_model="clinicalbert",
         smiles_model="chemberta",
-        cache_eeg=True,
     )
 
     print(f"\nDataset summary:")

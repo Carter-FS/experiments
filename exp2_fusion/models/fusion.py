@@ -4,6 +4,7 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
+from exp2_fusion.config import N_CHANNELS
 import torch.nn.functional as F
 
 from .eeg_encoders import get_eeg_encoder
@@ -20,7 +21,7 @@ class EEGSMILESMLPFusion(nn.Module):
     def __init__(
         self,
         eeg_encoder_type: str = "labram",
-        n_eeg_channels: int = 27,
+        n_eeg_channels: int = N_CHANNELS,
         n_eeg_times: int = 2000,
         eeg_embed_dim: int = 200,
         smiles_embed_dim: int = 768,
@@ -141,7 +142,7 @@ class EEGSMILESFuseMoE(nn.Module):
     def __init__(
         self,
         eeg_encoder_type: str = "labram",
-        n_eeg_channels: int = 27,
+        n_eeg_channels: int = N_CHANNELS,
         n_eeg_times: int = 2000,
         eeg_embed_dim: int = 200,
         smiles_embed_dim: int = 768,
@@ -280,7 +281,7 @@ class EEGSMILESFuseMoE(nn.Module):
 def get_fusion_model(
     fusion_type: str = "mlp",
     eeg_encoder_type: str = "labram",
-    n_eeg_channels: int = 27,
+    n_eeg_channels: int = N_CHANNELS,
     smiles_embed_dim: int = 768,
     **kwargs,
 ) -> nn.Module:
@@ -329,7 +330,7 @@ def test_fusion_models():
 
     batch_size = 2
     num_windows = 120
-    n_channels = 27
+    n_channels = N_CHANNELS
     n_times = 2000
     smiles_dim = 768
 

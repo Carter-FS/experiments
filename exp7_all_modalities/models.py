@@ -9,6 +9,7 @@ from typing import Tuple
 
 import torch
 import torch.nn as nn
+from exp2_fusion.config import N_CHANNELS
 import torch.nn.functional as F
 
 from .config import (
@@ -109,7 +110,7 @@ class QuadFusionMLP(nn.Module):
         num_classes: int = 2,
         dropout: float = 0.3,
         eeg_encoder_type: str = "eeg2vec",
-        n_channels: int = 27,
+        n_channels: int = N_CHANNELS,
         n_times: int = 2000,
         max_windows: int = 120,
         window_chunk_size: int = 32,
@@ -228,7 +229,7 @@ class QuadFusionMoE(nn.Module):
         dropout: float = 0.1,
         aux_loss_weight: float = 0.1,
         eeg_encoder_type: str = "eeg2vec",
-        n_channels: int = 27,
+        n_channels: int = N_CHANNELS,
         n_times: int = 2000,
         eeg_embed_dim: int = 256,
         num_eeg_layers: int = 2,

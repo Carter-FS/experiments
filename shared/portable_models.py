@@ -11,13 +11,13 @@ an ``EEG_`` prefix here because the two scripts used the same names.
 
 from __future__ import annotations
 
-import pickle
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
+from shared.eeg_cache import load_cache
 from sklearn.metrics import balanced_accuracy_score, roc_auc_score, roc_curve
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -265,9 +265,12 @@ def refit_clinical(train_df: pd.DataFrame, apply_df: pd.DataFrame, fit_idx: np.n
 # EEG configurations
 # -----------------------------------------------------------------------
 
+EEG_CONVENTION = "zscore_window"   # per-window, per-channel z-score in microvolts
+
+
 def load_eeg_cache(path: Path) -> dict:
-    with path.open("rb") as f:
-        return pickle.load(f)
+    """``{pid: (windows, padding_mask)}`` from a version-2 cache (shared.eeg_cache)."""
+    return load_cache(path, EEG_CONVENTION)
 
 
 def stack_eeg_for_pids(eeg_cache: dict, pids: list[str]) -> tuple[torch.Tensor, torch.Tensor]:

@@ -1,6 +1,7 @@
 """Configuration for Experiment 3: LLM + EEG + SMILES triple fusion."""
 
 from pathlib import Path
+from exp2_fusion.config import N_CHANNELS  # the 19-channel cache montage
 
 # Paths
 BASE_DIR = Path(__file__).parent.parent
@@ -86,7 +87,7 @@ CV_CONFIG = {
 # encoder_type (e.g. the EEG2Vec headline row); other settings are shared.
 EEG_ENCODER_CONFIG = {
     "encoder_type": "simplecnn",
-    "n_channels": 27,
+    "n_channels": N_CHANNELS,
     "n_times": 2000,
     "embed_dim": 256,
     "num_heads": 4,

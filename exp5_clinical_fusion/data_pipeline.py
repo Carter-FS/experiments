@@ -1,13 +1,13 @@
 """Data pipeline for Experiment 5: Clinical + Single Modality Fusion."""
 
 import logging
-import pickle
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 import torch
+from exp2_fusion.config import N_CHANNELS
 from torch.utils.data import Dataset
 
 from .config import (
@@ -29,6 +29,9 @@ from exp4_baseline.data_pipeline import (
     clean_psy_column,
     load_clinical_data as _exp4_load_clinical_data,
 )
+from shared.eeg_cache import load_cache
+
+EEG_CONVENTION = "zscore_window"   # per-window, per-channel z-score in microvolts
 from shared.cohort import dedupe_by_pid, smiles_vector
 
 logger = logging.getLogger("exp5")
@@ -142,25 +145,20 @@ def load_text_embeddings(text_model: str, df: pd.DataFrame) -> Dict[str, np.ndar
 
 
 def load_eeg_data(cache_path: Path = EEG_CACHE_PATH) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
-    """Load preprocessed EEG data from cache.
-
-    Args:
-        cache_path: Path to cached EEG pickle file.
+    """EEG windows from the version-2 cache, normalised per window and channel.
 
     Returns:
-        Dict mapping patient ID to (windows, padding_mask).
+        Dict mapping patient ID to (windows, padding_mask); see ``shared.eeg_cache``.
     """
     if not cache_path.exists():
         raise FileNotFoundError(
-            f"EEG cache not found at {cache_path}. "
-            "Run exp2 or exp3 first to generate the cache."
+            f"EEG cache not found at {cache_path}. Build it with: python -m shared.eeg_cache build --cohort alfred"
         )
-
-    logger.info(f"Loading cached EEG data from {cache_path}")
-    with open(cache_path, "rb") as f:
-        eeg_data = pickle.load(f)
+    logger.info(f"Loading EEG windows from {cache_path} ({EEG_CONVENTION})")
+    eeg_data = load_cache(cache_path, EEG_CONVENTION)
     logger.info(f"Loaded {len(eeg_data)} patients from cache")
     return eeg_data
+
 
 
 # ============================================================================
@@ -258,7 +256,7 @@ class ClinicalEEGDataset(Dataset):
         eeg_windows: List[np.ndarray],
         padding_masks: List[np.ndarray],
         labels: np.ndarray,
-        max_channels: int = 27,
+        max_channels: int = N_CHANNELS,
         asm_drugs: Optional[List[str]] = None,
     ):
         """Initialise dataset.
@@ -503,7 +501,7 @@ def create_clinical_eeg_datasets(
     eeg_data: Dict[str, Tuple[np.ndarray, np.ndarray]],
     train_indices: np.ndarray,
     val_indices: np.ndarray,
-    max_channels: int = 27,
+    max_channels: int = N_CHANNELS,
 ) -> Tuple[ClinicalEEGDataset, ClinicalEEGDataset, ClinicalFeaturePreprocessor]:
     """Create train/val datasets for Clinical + EEG.
 

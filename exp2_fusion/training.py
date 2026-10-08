@@ -551,7 +551,6 @@ if __name__ == "__main__":
     # Prepare data
     eeg_data, smiles_embeddings, smiles_indices, df = prepare_data(
         smiles_model="chemberta",
-        cache_eeg=True,
     )
 
     # Run single experiment with SimpleCNN (faster for testing)

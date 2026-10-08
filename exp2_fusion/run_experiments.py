@@ -117,7 +117,6 @@ def run_all_experiments(
             logger.info(f"Loading data for SMILES model: {smiles_model_name}")
             eeg_data, smiles_embeddings, smiles_indices, df = prepare_data(
                 smiles_model=smiles_model_name,
-                cache_eeg=True,
             )
             logger.info(f"Loaded {len(df)} patients with EEG data")
 

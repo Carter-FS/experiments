@@ -27,6 +27,9 @@ EEG_CONFIG = {
 
 # Derived values
 MAX_WINDOWS = int(EEG_CONFIG["use_duration_sec"] / EEG_CONFIG["window_sec"])  # 120
+# The 19 standard 10-20 scalp channels (eeg_pipeline.STD_19_TEN_TWENTY), the only
+# montage the EEG cache holds (shared/eeg_cache.py).
+N_CHANNELS = 19
 
 # Training configuration
 TRAIN_CONFIG = {

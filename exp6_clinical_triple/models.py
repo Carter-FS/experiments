@@ -8,6 +8,7 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
+from exp2_fusion.config import N_CHANNELS
 
 from .config import (
     CLINICAL_DIM,
@@ -148,7 +149,7 @@ class ClinicalSMILESEEGFusion(nn.Module):
         self,
         clinical_dim: int = CLINICAL_DIM,
         smiles_dim: int = 768,
-        n_channels: int = 27,
+        n_channels: int = N_CHANNELS,
         n_times: int = 2000,
         hidden_dim: int = 64,
         num_classes: int = 2,

@@ -257,9 +257,10 @@ preflight () {
     check "braindecode (exp9 EEGNet/LaBraM encoders)" "'$PY' -c 'import braindecode'"
     check "CUDA visible (expected on a GPU node only)" "'$PY' -c 'import torch; assert torch.cuda.is_available()'"
     check "asm_data (clinical CSVs)" "'$PY' -c 'from shared.hep_cohort import ALFRED_CSV, HEP_CSV; assert ALFRED_CSV.exists() and HEP_CSV.exists()'"
-    check "27-channel EEG cache (exp2-7, 9, 11, 16, 17)" "ls $OUT/eeg_cache/processed_eeg*.pkl | grep -v std19"
-    check "19-channel EEG caches (HEP EEG, exp18)" \
-        "[[ -f $OUT/eeg_cache/processed_eeg_std19_alfred.pkl && -f $OUT/eeg_cache/processed_eeg_std19_hep.pkl ]]"
+    check "EEG cache v2, Melbourne (exp2-7, 9, 11, 16, 17, 18, HEP; python -m shared.eeg_cache build --cohort alfred)" \
+        "'$PY' -m shared.eeg_cache stats $OUT/eeg_cache/eeg19_v2_alfred.pkl > /dev/null"
+    check "EEG cache v2, HEP1 (HEP EEG, exp18; python -m shared.eeg_cache build --cohort hep)" \
+        "'$PY' -m shared.eeg_cache stats $OUT/eeg_cache/eeg19_v2_hep.pkl > /dev/null"
     check "text + SMILES embeddings" "[[ -f $OUT/bert_alfred_1stregimen_eeg_embeddings.npy && -f $OUT/hep_clinicalbert_eeg_embeddings.npy && -f $OUT/chemberta_asm_embeddings.npy ]]"
     check "REVE features (exp15, reve)" "ls $OUT/reve_features_alfred*.npz"
     check "legacy exp9 EEG2Vec OOF file (reve's 147-patient cohort)" \

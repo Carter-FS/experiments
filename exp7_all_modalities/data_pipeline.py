@@ -1,13 +1,13 @@
 """Data pipeline for Experiment 7: All Four Modalities Fusion."""
 
 import logging
-import pickle
 from pathlib import Path
 from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
 import torch
+from exp2_fusion.config import N_CHANNELS
 from torch.utils.data import Dataset
 
 from .config import (
@@ -28,7 +28,9 @@ from exp4_baseline.data_pipeline import (
     clean_outcome_column,
     clean_psy_column,
 )
-from exp2_fusion.eeg_pipeline import get_valid_patient_eeg_pairs
+from shared.eeg_cache import load_cache
+
+EEG_CONVENTION = "zscore_window"   # per-window, per-channel z-score in microvolts
 from shared.cohort import dedupe_by_pid, filter_and_map_outcome, smiles_vector
 
 logger = logging.getLogger("exp7")
@@ -124,18 +126,20 @@ def load_text_embeddings(text_model: str, df: pd.DataFrame) -> Dict[str, np.ndar
 
 
 def load_eeg_data(cache_path: Path = EEG_CACHE_PATH) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
-    """Load preprocessed EEG data from cache."""
+    """EEG windows from the version-2 cache, normalised per window and channel.
+
+    Returns:
+        Dict mapping patient ID to (windows, padding_mask); see ``shared.eeg_cache``.
+    """
     if not cache_path.exists():
         raise FileNotFoundError(
-            f"EEG cache not found at {cache_path}. "
-            "Run exp2 or exp3 first to generate the cache."
+            f"EEG cache not found at {cache_path}. Build it with: python -m shared.eeg_cache build --cohort alfred"
         )
-
-    logger.info(f"Loading cached EEG data from {cache_path}")
-    with open(cache_path, "rb") as f:
-        eeg_data = pickle.load(f)
+    logger.info(f"Loading EEG windows from {cache_path} ({EEG_CONVENTION})")
+    eeg_data = load_cache(cache_path, EEG_CONVENTION)
     logger.info(f"Loaded {len(eeg_data)} patients from cache")
     return eeg_data
+
 
 
 # ============================================================================
@@ -155,7 +159,7 @@ class QuadModalityDataset(Dataset):
         smiles_indices: Dict[str, int],
         asm_drugs: List[str],
         labels: np.ndarray,
-        max_channels: int = 27,
+        max_channels: int = N_CHANNELS,
         pids: List = None,
         return_pid: bool = False,
     ):
@@ -250,11 +254,11 @@ def prepare_quad_modality_data(
     """
     logger.info(f"Preparing quad modality data: {text_model}, {smiles_model}")
 
-    # Step 1: Get valid patient IDs from EEG files (same base as Exp3)
-    # This ensures fair comparison between experiments
-    eeg_df = get_valid_patient_eeg_pairs()
-    valid_pids = set(eeg_df["pid"].astype(str).tolist())
-    logger.info(f"Found {len(valid_pids)} patients with valid EEG files and outcomes")
+    # Step 1: the EEG cohort is every patient with a recording in the version-2 cache
+    # (the same base as exp2, exp3, exp5c and exp6b).
+    eeg_data = load_eeg_data()
+    valid_pids = set(eeg_data.keys())
+    logger.info(f"Loaded EEG windows for {len(valid_pids)} patients")
 
     # Step 2: Load full clinical data with all columns
     df = pd.read_csv(CSV_PATH)
@@ -279,10 +283,6 @@ def prepare_quad_modality_data(
     text_embeddings = load_text_embeddings(text_model, df)
     logger.info(f"Loaded text embeddings for {len(text_embeddings)} patients")
 
-    # Load cached EEG data
-    eeg_data = load_eeg_data()
-    logger.info(f"Loaded EEG data for {len(eeg_data)} patients")
-
     # Filter to patients with clinical + text + EEG (SMILES is a fixed per-drug
     # input attached to every patient via smiles_vector, so it does not gate the
     # cohort), then dedupe by pid before the fold split.
@@ -304,7 +304,7 @@ def create_quad_modality_datasets(
     eeg_data: Dict[str, Tuple[np.ndarray, np.ndarray]],
     train_indices: np.ndarray,
     val_indices: np.ndarray,
-    max_channels: int = 27,
+    max_channels: int = N_CHANNELS,
     return_pid: bool = False,
 ) -> Tuple[QuadModalityDataset, QuadModalityDataset, ClinicalFeaturePreprocessor]:
     """Create train/val datasets for all 4 modalities.

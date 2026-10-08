@@ -16,6 +16,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import torch
 import torch.nn as nn
+from exp2_fusion.config import N_CHANNELS
 from torch.utils.data import DataLoader
 
 # Add parent directory for imports
@@ -49,7 +50,7 @@ class AblationModel(nn.Module):
         self,
         encoder_type: str = "simplecnn",
         aggregator_type: str = "transformer",
-        n_channels: int = 27,
+        n_channels: int = N_CHANNELS,
         n_times: int = 2000,
         embed_dim: int = 256,
         output_dim: int = 256,
@@ -497,7 +498,6 @@ def run_all_ablations(
     logger.info("Preparing data...")
     eeg_data, smiles_embeddings, smiles_indices, df = prepare_data(
         smiles_model=smiles_model,
-        cache_eeg=True,
     )
     logger.info(f"Loaded {len(df)} patients")
 

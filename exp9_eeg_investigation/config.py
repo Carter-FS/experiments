@@ -2,13 +2,16 @@
 
 from pathlib import Path
 
+from exp2_fusion.config import N_CHANNELS  # the 19-channel cache montage
+from shared.eeg_cache import CACHE_PATHS as _EEG_CACHE_PATHS
+
 # Paths
 BASE_DIR = Path(__file__).parent.parent
 DATA_DIR = BASE_DIR.parent / "asm_data"
 CSV_PATH = DATA_DIR / "alfred_1st_regimen.csv"
 OUTPUTS_DIR = BASE_DIR / "outputs"
 RESULTS_DIR = OUTPUTS_DIR / "exp9_results"
-EEG_CACHE_PATH = OUTPUTS_DIR / "eeg_cache" / "processed_eeg.pkl"
+EEG_CACHE_PATH = _EEG_CACHE_PATHS["alfred"]   # version-2 cache (shared/eeg_cache.py)
 
 # Create results directory
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)

@@ -5,6 +5,7 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
+from exp2_fusion.config import N_CHANNELS
 import torch.nn.functional as F
 
 # Import guard for braindecode (may fail due to CUDA library issues)
@@ -45,7 +46,7 @@ class LaBraMEncoder(nn.Module):
 
     def __init__(
         self,
-        n_channels: int = 27,
+        n_channels: int = N_CHANNELS,
         n_times: int = 2000,  # 10s at 200Hz
         sfreq: float = 200,
         emb_size: int = 128,  # Reduced for memory
@@ -128,7 +129,7 @@ class EEGNetEncoder(nn.Module):
 
     def __init__(
         self,
-        n_channels: int = 27,
+        n_channels: int = N_CHANNELS,
         n_times: int = 2000,
         sfreq: float = 200,
         emb_size: int = 256,
@@ -221,7 +222,7 @@ class SimpleCNNEncoder(nn.Module):
 
     def __init__(
         self,
-        n_channels: int = 27,
+        n_channels: int = N_CHANNELS,
         n_times: int = 2000,
         emb_size: int = 256,
         dropout: float = 0.1,
@@ -294,7 +295,7 @@ class EEG2VecEncoder(nn.Module):
 
     def __init__(
         self,
-        n_channels: int = 27,
+        n_channels: int = N_CHANNELS,
         n_times: int = 2000,
         emb_size: int = 256,
         F1: int = 8,
@@ -368,7 +369,7 @@ class EEG2VecEncoder(nn.Module):
 
 def get_eeg_encoder(
     encoder_type: str = "labram",
-    n_channels: int = 27,
+    n_channels: int = N_CHANNELS,
     n_times: int = 2000,
     emb_size: int = 200,
     **kwargs,
@@ -460,7 +461,7 @@ def test_encoders():
     if not EEGNET_AVAILABLE:
         print(f"EEGNet import error: {EEGNET_IMPORT_ERROR}")
 
-    n_channels = 27
+    n_channels = N_CHANNELS
     n_times = 2000
     batch_size = 4
 

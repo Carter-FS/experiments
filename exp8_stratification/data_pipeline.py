@@ -29,7 +29,6 @@ from exp7_all_modalities.config import (
     OUTCOME_MAPPING,
 )
 from exp4_baseline.data_pipeline import ClinicalFeaturePreprocessor
-from exp2_fusion.eeg_pipeline import get_valid_patient_eeg_pairs
 
 from .data_cleaning import load_and_clean_data
 
@@ -61,10 +60,10 @@ def prepare_quad_modality_data_with_df(
     """
     logger.info(f"Preparing quad modality data: {text_model}, {smiles_model}")
 
-    # Step 1: Get valid patient IDs from EEG files (same base as Exp3/Exp7)
-    eeg_df = get_valid_patient_eeg_pairs()
-    valid_pids = set(eeg_df["pid"].astype(str).tolist())
-    logger.info(f"Found {len(valid_pids)} patients with valid EEG files")
+    # Step 1: the EEG cohort is every patient with a recording in the version-2 cache
+    eeg_data = load_eeg_data()
+    valid_pids = set(eeg_data.keys())
+    logger.info(f"Loaded EEG windows for {len(valid_pids)} patients")
 
     # Step 2: Load and clean clinical data
     df, cleaning_report = load_and_clean_data()
@@ -83,8 +82,6 @@ def prepare_quad_modality_data_with_df(
     logger.info(f"Loaded text embeddings for {len(text_embeddings)} patients")
 
     # Load cached EEG data
-    eeg_data = load_eeg_data()
-    logger.info(f"Loaded EEG data for {len(eeg_data)} patients")
 
     # Filter to patients with ALL 4 modalities
     valid_rows = []

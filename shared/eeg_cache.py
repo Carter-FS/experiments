@@ -50,6 +50,7 @@ import numpy as np
 import pandas as pd
 
 from exp2_fusion.config import EEG_CONFIG, MAX_WINDOWS
+from exp2_fusion.config import N_CHANNELS as _CONFIG_N_CHANNELS
 from exp2_fusion.eeg_pipeline import (
     STD_19_TEN_TWENTY,
     apply_filters,
@@ -59,6 +60,7 @@ from exp2_fusion.eeg_pipeline import (
     filter_to_standard_19,
     read_edf,
 )
+from shared.cohort import dedupe_by_pid, filter_and_map_outcome
 from shared.hep_cohort import EXPERIMENTS_ROOT, find_asm_data_dir
 
 logger = logging.getLogger(__name__)
@@ -71,6 +73,8 @@ FLAT_CHUNK_S = 100.0        # supervisor's find_signal_start chunk
 FLAT_SD_UV = 1e-2           # supervisor's threshold (1e-8 V) in microvolts
 CH_NAMES: Tuple[str, ...] = tuple(STD_19_TEN_TWENTY)
 N_CHANNELS = len(CH_NAMES)
+if N_CHANNELS != _CONFIG_N_CHANNELS:
+    raise ImportError(f"exp2_fusion.config.N_CHANNELS ({_CONFIG_N_CHANNELS}) must equal the cache montage ({N_CHANNELS})")
 TARGET_SFREQ = float(EEG_CONFIG["target_sr"])
 SAMPLES_PER_WINDOW = int(EEG_CONFIG["window_sec"] * EEG_CONFIG["target_sr"])
 
@@ -80,7 +84,9 @@ COHORTS: Dict[str, Dict[str, object]] = {
     "hep": {"notch_hz": 60.0, "csv": "hep_1st_regimen.csv", "edf_dir": ("HEP", "EEG"),
             "pid_col": "patient", "outcomes": (0, 1)},
 }
-CACHE_DIR = EXPERIMENTS_ROOT / "outputs" / "eeg_cache"
+# ASM_EEG_CACHE_DIR redirects the caches (smoke runs on a laptop subset); the default is
+# the production location.
+CACHE_DIR = Path(os.environ.get("ASM_EEG_CACHE_DIR") or EXPERIMENTS_ROOT / "outputs" / "eeg_cache")
 CACHE_PATHS = {"alfred": CACHE_DIR / "eeg19_v2_alfred.pkl", "hep": CACHE_DIR / "eeg19_v2_hep.pkl"}
 SKIP_REASONS = ("missing_channels", "units", "flat", "too_short", "non_finite", "read_error")
 # EDF physical dimensions MNE scales to volts (lower case); "v" is already volts.
@@ -305,6 +311,21 @@ def discover_recordings(cohort: str, asm_data_dir: Optional[Path] = None) -> Tup
     pairs = [(pid, mapping[pid]) for pid in pids if pid in mapping]
     counts.update({"csv_patients": len(pids), "edf_files": len(files), "patients_with_edf": len(pairs)})
     return pairs, counts
+
+
+def eeg_patient_frame(eeg_pids: Iterable[str], csv_path: Optional[Path] = None) -> pd.DataFrame:
+    """Melbourne clinical rows for the patients in a loaded EEG cache.
+
+    Rows of ``alfred_1st_regimen.csv`` with a usable outcome (mapped once through
+    ``OUTCOME_MAPPING``), de-duplicated to one row per patient, restricted to
+    ``eeg_pids`` (the keys of ``load_cache``) and ordered as in the CSV, with ``pid``
+    as a string. This is the cohort definition every Melbourne EEG experiment uses.
+    """
+    csv_path = Path(csv_path) if csv_path is not None else find_asm_data_dir() / str(COHORTS["alfred"]["csv"])
+    df = dedupe_by_pid(filter_and_map_outcome(pd.read_csv(csv_path)))
+    df["pid"] = df["pid"].astype(str)
+    keep = set(str(p) for p in eeg_pids)
+    return df[df["pid"].isin(keep)].reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------

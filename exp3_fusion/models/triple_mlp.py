@@ -2,6 +2,7 @@
 
 import torch
 import torch.nn as nn
+from exp2_fusion.config import N_CHANNELS
 
 # Import EEG components from exp2
 import sys
@@ -30,7 +31,7 @@ class TripleModalityMLP(nn.Module):
         dropout: float = 0.3,
         # EEG encoder config
         eeg_encoder_type: str = "simplecnn",
-        n_eeg_channels: int = 27,
+        n_eeg_channels: int = N_CHANNELS,
         n_eeg_times: int = 2000,
         eeg_embed_dim: int = 256,
         num_heads: int = 4,
@@ -154,7 +155,7 @@ def test_triple_mlp():
     text_dim = 768
     smiles_dim = 768
     num_windows = 120
-    n_channels = 27
+    n_channels = N_CHANNELS
     n_times = 2000
 
     # Create inputs

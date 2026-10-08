@@ -75,6 +75,7 @@ RMH_PREFIX = "RMH"
 SENSITIVITY_CONFIGS = ("Exp4a", "Exp5a", "Exp5b")
 
 OUT_DIR = EXPERIMENTS_ROOT / "outputs" / "exp18_mixed_cohort"
-EEG_CACHE_DIR = EXPERIMENTS_ROOT / "outputs" / "eeg_cache"
-MEL_EEG_CACHE = EEG_CACHE_DIR / "processed_eeg_std19_alfred.pkl"
-HEP_EEG_CACHE = EEG_CACHE_DIR / "processed_eeg_std19_hep.pkl"
+from shared.eeg_cache import CACHE_PATHS as _EEG_CACHE_PATHS  # noqa: E402  version-2 caches
+
+MEL_EEG_CACHE = _EEG_CACHE_PATHS["alfred"]
+HEP_EEG_CACHE = _EEG_CACHE_PATHS["hep"]

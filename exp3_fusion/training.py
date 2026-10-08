@@ -428,7 +428,6 @@ def run_cross_validation(
     text_emb, eeg_data, smiles_emb, smiles_idx, df = prepare_data(
         text_model=text_model,
         smiles_model=smiles_model,
-        cache_eeg=True,
     )
 
     text_dim = 768  # All text models use 768

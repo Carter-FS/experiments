@@ -1,7 +1,6 @@
 """Data pipeline for Experiment 2: EEG + SMILES fusion."""
 
 import logging
-import pickle
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -13,14 +12,13 @@ from torch.utils.data import Dataset
 from .config import (
     ASM_NAME_MAP,
     CHEMBERTA_EMBEDDINGS,
-    CSV_PATH,
-    EEG_CONFIG,
-    EEG_DIR,
-    OUTPUTS_DIR,
     SMILESTRF_EMBEDDINGS,
 )
-from .eeg_pipeline import EEGPreprocessor, get_valid_patient_eeg_pairs
-from shared.cohort import dedupe_by_pid, smiles_vector
+from shared.cohort import smiles_vector
+from shared.eeg_cache import CACHE_PATHS, load_cache, eeg_patient_frame
+
+EEG_CACHE_PATH = CACHE_PATHS["alfred"]
+EEG_CONVENTION = "zscore_window"   # per-window, per-channel z-score in microvolts
 
 logger = logging.getLogger("exp2")
 
@@ -127,122 +125,31 @@ def load_smiles_embeddings(smiles_model: str = "chemberta") -> Tuple[np.ndarray,
     return embeddings, index_map
 
 
-def preprocess_all_eeg(
-    df: pd.DataFrame,
-    cache_path: Optional[Path] = None,
-    force_reprocess: bool = False,
-    use_standard_19: bool = False,
-    notch_freq: float = 50.0,
-) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
-    """Preprocess all EEG files and optionally cache results.
-
-    Args:
-        df: DataFrame with patient info (must have 'pid' and 'eeg_path' columns).
-        cache_path: Path to cache processed data (pickle file).
-        force_reprocess: If True, ignore cache and reprocess all.
-        use_standard_19: Stage C cohort-portable mode. If True, restrict
-            each recording to the 19 standard 10-20 EEG channels.
-        notch_freq: Powerline notch frequency (50 for Alfred/AU, 60 for
-            HEP/US).
-
-    Returns:
-        Dict mapping patient ID to (windows, padding_mask).
-    """
-    # Try to load from cache
-    if cache_path and cache_path.exists() and not force_reprocess:
-        logger.info(f"Loading cached EEG data from {cache_path}")
-        with open(cache_path, "rb") as f:
-            cached_data = pickle.load(f)
-        logger.info(f"Loaded {len(cached_data)} patients from cache")
-        return cached_data
-
-    logger.info(f"Preprocessing EEG data for {len(df)} patients (use_standard_19={use_standard_19}, notch={notch_freq}Hz)...")
-    preprocessor = EEGPreprocessor(
-        use_standard_19=use_standard_19,
-        notch_freq=notch_freq,
-    )
-    eeg_data = {}
-    skipped = 0
-    skipped_reasons = {"too_short": 0, "error": 0}
-
-    for idx, row in df.iterrows():
-        pid = str(row["pid"])
-        eeg_path = Path(row["eeg_path"])
-
-        try:
-            logger.debug(f"Processing {pid}: {eeg_path}")
-            result = preprocessor.process(eeg_path)
-
-            if result is None:
-                logger.debug(f"Skipping {pid}: EEG duration < minimum")
-                skipped += 1
-                skipped_reasons["too_short"] += 1
-                continue
-
-            windows, padding_mask, n_channels = result
-            eeg_data[pid] = (windows, padding_mask)
-            logger.debug(f"Processed {pid}: {n_channels} channels, {(~padding_mask).sum()} valid windows")
-
-            if len(eeg_data) % 20 == 0:
-                logger.info(f"  Processed {len(eeg_data)} / {len(df)} patients...")
-
-        except Exception as e:
-            logger.warning(f"Error processing {pid}: {type(e).__name__}: {e}")
-            skipped += 1
-            skipped_reasons["error"] += 1
-            continue
-
-    logger.info(f"EEG preprocessing complete: {len(eeg_data)} processed, {skipped} skipped")
-    logger.info(f"  Skipped reasons: too_short={skipped_reasons['too_short']}, error={skipped_reasons['error']}")
-
-    # Cache results
-    if cache_path:
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(cache_path, "wb") as f:
-            pickle.dump(eeg_data, f)
-        logger.info(f"Cached EEG data to {cache_path}")
-
-    return eeg_data
-
-
 def prepare_data(
     smiles_model: str = "chemberta",
-    cache_eeg: bool = True,
-    force_reprocess: bool = False,
 ) -> Tuple[Dict[str, Tuple[np.ndarray, np.ndarray]], np.ndarray, Dict[str, int], pd.DataFrame]:
     """Prepare all data for training.
 
+    The EEG windows come from the version-2 cache (``shared.eeg_cache``), normalised
+    per window and channel at load time, and the cohort is every Melbourne patient
+    with a usable outcome and a recording in that cache.
+
     Args:
         smiles_model: Which SMILES model to use ('chemberta' or 'smilestrf').
-        cache_eeg: Whether to cache preprocessed EEG data.
-        force_reprocess: If True, reprocess EEG even if cache exists.
 
     Returns:
         Tuple of (eeg_data, smiles_embeddings, smiles_indices, patient_df).
     """
     logger.info("Preparing data...")
+    eeg_data = load_cache(EEG_CACHE_PATH, EEG_CONVENTION)
+    logger.info(f"Loaded EEG windows for {len(eeg_data)} patients from {EEG_CACHE_PATH}")
 
-    # Get valid patient-EEG pairs
-    df = get_valid_patient_eeg_pairs()
-    logger.info(f"Found {len(df)} patients with valid EEG files and outcomes")
-
-    # Load SMILES embeddings
     logger.info(f"Loading SMILES embeddings for model: {smiles_model}")
     smiles_embeddings, smiles_indices = load_smiles_embeddings(smiles_model)
     logger.info(f"Loaded SMILES embeddings: shape={smiles_embeddings.shape}")
 
-    # Preprocess EEG data
-    cache_path = OUTPUTS_DIR / "eeg_cache" / "processed_eeg.pkl" if cache_eeg else None
-    eeg_data = preprocess_all_eeg(df, cache_path, force_reprocess)
-
-    # Filter df to only include patients with processed EEG
-    initial_count = len(df)
-    df = df[df["pid"].astype(str).isin(eeg_data.keys())].copy()
-    if len(df) < initial_count:
-        logger.warning(f"Filtered {initial_count - len(df)} patients without processed EEG")
-
-    # Dedupe by pid before the fold split (prevents cross-fold leakage).
-    df = dedupe_by_pid(df)
+    # One row per patient with a usable outcome and a cached recording.
+    df = eeg_patient_frame(eeg_data.keys())
     logger.info(f"Final dataset: {len(df)} patients")
 
     # Log class distribution
@@ -324,7 +231,6 @@ def test_data_pipeline():
     # Prepare data (use cache)
     eeg_data, smiles_embeddings, smiles_indices, df = prepare_data(
         smiles_model="chemberta",
-        cache_eeg=True,
     )
 
     print(f"\nDataset summary:")
