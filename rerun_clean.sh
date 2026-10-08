@@ -262,7 +262,7 @@ preflight () {
     check "EEG cache v2, HEP1 (HEP EEG, exp18; python -m shared.eeg_cache build --cohort hep)" \
         "'$PY' -m shared.eeg_cache stats $OUT/eeg_cache/eeg19_v2_hep.pkl > /dev/null"
     check "text + SMILES embeddings" "[[ -f $OUT/bert_alfred_1stregimen_eeg_embeddings.npy && -f $OUT/hep_clinicalbert_eeg_embeddings.npy && -f $OUT/chemberta_asm_embeddings.npy ]]"
-    check "REVE features (exp15, reve)" "ls $OUT/reve_features_alfred*.npz"
+    check "REVE features v2 (exp15, reve; thesisStandalone/analysis/reve_extract_features.py)" "ls $OUT/reve_features_v2_alfred*.npz"
     check "legacy exp9 EEG2Vec OOF file (reve's 147-patient cohort)" \
         "[[ -f $OUT/exp9_predictions/predictions_oof_exp9_encoder_eeg2vec.json ]]"
     check "logs/ directory (slurm opens its log files before the job starts)" "mkdir -p logs"

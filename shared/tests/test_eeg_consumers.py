@@ -21,12 +21,13 @@ from shared import eeg_cache as C
 
 REPO = Path(__file__).resolve().parents[2]
 EXPERIMENT_DIRS = sorted(p for p in REPO.glob("exp*") if p.is_dir()) + [REPO / "shared", REPO / "thesisStandalone" / "analysis"]
-SUPERSEDED = re.compile(r"processed_eeg(?!\*)|preprocess_all_eeg\(|get_valid_patient_eeg_pairs\(")
+SUPERSEDED = re.compile(r"processed_eeg(?!\*)|preprocess_all_eeg\(|get_valid_patient_eeg_pairs\(|cache_eeg=|force_reprocess=")
+# A 27-channel default or literal input shape anywhere in the experiment code.
+OLD_MONTAGE = re.compile(r"(n_channels|n_eeg_channels|max_channels)\s*(:\s*int)?\s*=\s*27\b|\(\s*\d+\s*,\s*27\s*,\s*2000\s*\)")
 # Files allowed to mention the old names: the pipeline that still defines the legacy
 # helpers, the superseded Stage C builder, exploratory analyses that are not rerun, and tests.
 ALLOWED = {"exp2_fusion/eeg_pipeline.py", "thesisStandalone/analysis/hep_eeg_preprocess.py",
-           "exp9_eeg_investigation/fold_analysis.py", "exp9_eeg_investigation/quality_analysis.py",
-           "shared/eeg_cache.py"}
+           "exp9_eeg_investigation/quality_analysis.py", "shared/eeg_cache.py"}
 
 
 def _python_files():
@@ -44,8 +45,30 @@ def test_no_consumer_references_the_superseded_caches():
     assert hits == [], hits
 
 
+def test_no_27_channel_default_remains():
+    hits = [f"{rel}:{i}" for rel, f in _python_files()
+            for i, line in enumerate(f.read_text().splitlines(), 1) if OLD_MONTAGE.search(line)]
+    assert hits == [], hits
+
+
+@pytest.mark.parametrize("module", sorted(p.relative_to(REPO).with_suffix("").as_posix().replace("/", ".")
+                                          for p in REPO.glob("exp*/run_experiments.py")))
+def test_every_run_script_imports(module):
+    importlib.import_module(module)
+
+
+@pytest.mark.parametrize("script", ["hep_external_validation_eeg", "hep_reduced_external_validation", "reve_extract_features"])
+def test_thesis_eeg_scripts_import(script):
+    import sys
+    root = str(REPO / "thesisStandalone")
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    importlib.import_module(f"analysis.{script}")
+
+
 @pytest.mark.parametrize("module", ["exp3_fusion.config", "exp5_clinical_fusion.config", "exp6_clinical_triple.config",
-                                    "exp7_all_modalities.config", "exp8_stratification.config", "exp9_eeg_investigation.config"])
+                                    "exp7_all_modalities.config", "exp8_stratification.config", "exp9_eeg_investigation.config",
+                                    "exp11_eeg_upgrade.config", "exp12_moe_hparam.config"])
 def test_configs_use_the_v2_cache_and_19_channels(module):
     cfg = importlib.import_module(module)
     if hasattr(cfg, "EEG_CACHE_PATH"):
@@ -109,7 +132,7 @@ def test_eeg_patient_frame_is_the_csv_rows_with_a_cached_recording(tmp_path):
     df = C.eeg_patient_frame(["8", "10", "11"], csv_path=csv)
     assert df["pid"].tolist() == ["8", "10"]           # 7 has no recording, 9 no usable outcome, 11 not in the CSV
     assert df["outcome"].tolist() == [0, 1]             # raw 2 -> 0, raw 1 -> 1 (OUTCOME_MAPPING)
-    assert df["pid"].dtype == object and {"focal", "sex", "ASM"} <= set(df.columns)
+    assert df["pid"].dtype == object and list(df.columns) == ["pid", "outcome", "ASM", "focal", "sex"]
 
 
 def test_model_and_dataset_defaults_are_19_channels():
@@ -118,8 +141,9 @@ def test_model_and_dataset_defaults_are_19_channels():
     from exp5_clinical_fusion import models as m5
     from exp6_clinical_triple import models as m6
     from exp7_all_modalities import models as m7
+    from exp11_eeg_upgrade import models as m11
     checked = 0
-    for mod in (eeg_encoders, fusion, triple_mlp, triple_fusemoe, m5, m6, m7):
+    for mod in (eeg_encoders, fusion, triple_mlp, triple_fusemoe, m5, m6, m7, m11):
         for _name, obj in inspect.getmembers(mod, lambda o: inspect.isclass(o) or inspect.isfunction(o)):
             if getattr(obj, "__module__", None) != mod.__name__:
                 continue
@@ -132,6 +156,14 @@ def test_model_and_dataset_defaults_are_19_channels():
                     assert params[pname].default == 19, (mod.__name__, _name, pname)
                     checked += 1
     assert checked >= 8
+
+
+def test_importing_the_loader_does_not_import_mne():
+    import subprocess, sys
+    code = "import sys; import shared.eeg_cache; print('mne' in sys.modules)"
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=REPO)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "False"
 
 
 def test_cache_dir_env_override(monkeypatch, tmp_path):

@@ -1,6 +1,7 @@
 """Configuration for Experiment 11: EEG2Vec 128D Re-runs with Aggregator Variants."""
 
 from pathlib import Path
+from exp2_fusion.config import N_CHANNELS  # the 19-channel cache montage
 
 # Paths
 BASE_DIR = Path(__file__).parent.parent
@@ -10,7 +11,7 @@ RESULTS_DIR = OUTPUTS_DIR / "exp11_results"
 # EEG encoder configuration (128D based on exp9 findings)
 EEG_CONFIG = {
     "encoder_type": "eeg2vec",
-    "n_channels": 27,
+    "n_channels": N_CHANNELS,
     "n_times": 2000,  # 10s @ 200Hz
     "embed_dim": 128,  # Reduced from 256 based on exp9 ablation
     "num_heads": 4,

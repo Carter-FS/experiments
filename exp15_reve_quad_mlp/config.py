@@ -19,7 +19,7 @@ RESULTS_DIR = OUTPUTS_DIR / "exp15_results"
 # Pre-computed REVE-base per-window features
 # Shape (n_patients, max_windows=120, embed_dim=512), pids array,
 # valid_window_counts array
-REVE_FEATURES_PATH = OUTPUTS_DIR / "reve_features_alfred.npz"
+REVE_FEATURES_PATH = OUTPUTS_DIR / "reve_features_v2_alfred.npz"   # from the version-2 cache (reve_extract_features.py)
 
 # Clinical feature configuration (re-used from exp4)
 CLINICAL_CONFIG = {

@@ -5,6 +5,7 @@ a grid of hyperparameters on the ClinicalBERT + ChemBERTa configuration.
 """
 
 from pathlib import Path
+from exp2_fusion.config import N_CHANNELS  # the 19-channel cache montage
 
 # Paths
 BASE_DIR = Path(__file__).parent.parent
@@ -20,7 +21,7 @@ SMILES_DIM = 768
 # EEG config (keep SimpleCNN to match exp3b baseline)
 EEG_ENCODER_CONFIG = {
     "encoder_type": "simplecnn",
-    "n_channels": 27,
+    "n_channels": N_CHANNELS,
     "n_times": 2000,
     "embed_dim": 256,
     "num_heads": 4,

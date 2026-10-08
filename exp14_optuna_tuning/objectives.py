@@ -12,6 +12,7 @@ import numpy as np
 import optuna
 import torch
 import torch.nn as nn
+from exp2_fusion.config import N_CHANNELS
 from sklearn.model_selection import StratifiedKFold
 from torch.utils.data import DataLoader
 
@@ -68,8 +69,7 @@ def _get_exp12_data():
         logger.info("Loading triple modality data (first time)...")
         _data_cache["exp12"] = prepare_data(
             text_model="clinicalbert",
-            smiles_model="chemberta",
-            cache_eeg=True,
+            smiles_model="chemberta"
         )
     return _data_cache["exp12"]
 
@@ -215,7 +215,7 @@ def objective_exp11_quadmlpv2(trial: optuna.Trial) -> float:
             eeg_encoder_type="eeg2vec",
             eeg_embed_dim=params["eeg_embed_dim"],
             aggregator_type=params["aggregator_type"],
-            n_channels=27,
+            n_channels=N_CHANNELS,
             n_times=2000,
             max_windows=120,
             window_chunk_size=32,

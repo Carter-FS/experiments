@@ -463,30 +463,6 @@ class EEGNormaliser:
 # File Operations
 # ============================================================================
 
-def extract_patient_id(filename: str) -> Optional[str]:
-    """Extract patient ID from EEG filename.
-
-    Handles various naming conventions:
-    - 083_7085712_15-2-2019.edf -> 083
-    - 093,EEG,07022018.edf -> 093
-    - 1002,EEG,7565706.edf -> 1002
-    - 138_15-3-2018.edf -> 138
-    """
-    basename = Path(filename).stem
-
-    # Try comma-separated format first (most common)
-    if "," in basename:
-        pid = basename.split(",")[0]
-        return pid.strip()
-
-    # Try underscore-separated format
-    if "_" in basename:
-        pid = basename.split("_")[0]
-        return pid.strip()
-
-    return None
-
-
 def build_patient_eeg_map(eeg_dir: Path = EEG_DIR) -> Dict[str, Path]:
     """Build mapping from patient ID to EEG file path.
 
@@ -505,28 +481,9 @@ def build_patient_eeg_map(eeg_dir: Path = EEG_DIR) -> Dict[str, Path]:
     return patient_map
 
 
-# Standard 10-20 modern-naming canonical 19 scalp EEG channels.
-# Both Alfred and HEP recordings include these (Alfred natively, HEP under
-# the old MCN names T3/T4/T5/T6). The non-EEG channels present in the
-# EDFs but mistyped as 'eeg' (EMG+/-, PG1/2, A1/A2, ECG+/-, ekg, sop)
-# are dropped by the name filter, per Duong's instruction (2026-05-21):
-# "You should only use EEG channels. Other channels like ecg, ekg, sop,
-# etc. should be ignored."
-STD_19_TEN_TWENTY = (
-    "FP1", "FP2", "F7", "F3", "FZ", "F4", "F8",
-    "T7", "C3", "CZ", "C4", "T8",
-    "P7", "P3", "PZ", "P4", "P8",
-    "O1", "O2",
+from .channels import (  # noqa: E402,F401  re-exported; the constants live in a module without MNE
+    N_CHANNELS, OLD_TO_MODERN_NAME, STD_19_TEN_TWENTY, extract_patient_id, normalise_channel_name,
 )
-# Old MCN names -> modern. Applied case-insensitively to all incoming
-# channel names before the 19-channel intersection check.
-OLD_TO_MODERN_NAME = {"T3": "T7", "T4": "T8", "T5": "P7", "T6": "P8"}
-
-
-def normalise_channel_name(name: str) -> str:
-    """Return the canonical modern uppercase form of an EEG channel name."""
-    n = name.strip().upper()
-    return OLD_TO_MODERN_NAME.get(n, n)
 
 
 def filter_to_standard_19(raw) -> "mne.io.BaseRaw":

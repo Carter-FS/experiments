@@ -12,7 +12,6 @@ from torch.utils.data import Dataset
 
 from .config import (
     ASM_NAMES_FILE,
-    CLINICAL_CONFIG,
     CSV_PATH,
     EEG_CACHE_PATH,
     OUTCOME_MAPPING,

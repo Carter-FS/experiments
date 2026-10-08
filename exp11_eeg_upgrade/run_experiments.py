@@ -175,7 +175,7 @@ def run_cv_exp3a(exp_config, device, prediction_logger=None, asm_balance_mode="n
 
     logger.info(f"  Data: text={text_model}, smiles={smiles_model}")
     text_emb, eeg_data, smiles_emb, smiles_idx, df = prepare_exp3_data(
-        text_model=text_model, smiles_model=smiles_model, cache_eeg=True,
+        text_model=text_model, smiles_model=smiles_model
     )
     smiles_dim = SMILES_DIMS[smiles_model]
     max_channels = get_max_channels(eeg_data)

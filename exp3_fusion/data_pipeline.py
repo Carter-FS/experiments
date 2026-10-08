@@ -2,20 +2,17 @@
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
 import torch
 from exp2_fusion.config import N_CHANNELS
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 
 from .config import (
     ASM_NAMES_FILE,
     CSV_PATH,
-    EEG_DIR,
-    OUTCOME_MAPPING,
-    OUTPUTS_DIR,
     SMILES_EMBEDDINGS,
     TEXT_EMBEDDINGS,
 )
@@ -250,6 +247,11 @@ def prepare_data(
     logger.info(f"Outcome distribution: {dict(outcome_counts)}")
 
     return text_embeddings, eeg_data, smiles_embeddings, smiles_indices, df
+
+
+def get_max_channels(eeg_data: Dict[str, Tuple[np.ndarray, np.ndarray]]) -> int:
+    """Get maximum number of channels across all EEG data."""
+    return max(data[0].shape[1] for data in eeg_data.values())
 
 
 def create_datasets(

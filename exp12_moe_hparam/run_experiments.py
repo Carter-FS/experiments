@@ -82,7 +82,7 @@ def run_cv(exp_config, device):
     """Run 5-fold CV for a single hyperparameter configuration."""
     logger.info(f"  Preparing data: text={TEXT_MODEL}, smiles={SMILES_MODEL}")
     text_emb, eeg_data, smiles_emb, smiles_idx, df = prepare_data(
-        text_model=TEXT_MODEL, smiles_model=SMILES_MODEL, cache_eeg=True,
+        text_model=TEXT_MODEL, smiles_model=SMILES_MODEL
     )
     max_channels = get_max_channels(eeg_data)
     outcomes = df["outcome"].values

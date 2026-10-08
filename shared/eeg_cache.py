@@ -49,17 +49,9 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
+from exp2_fusion.channels import STD_19_TEN_TWENTY, extract_patient_id
 from exp2_fusion.config import EEG_CONFIG, MAX_WINDOWS
 from exp2_fusion.config import N_CHANNELS as _CONFIG_N_CHANNELS
-from exp2_fusion.eeg_pipeline import (
-    STD_19_TEN_TWENTY,
-    apply_filters,
-    create_windows,
-    extract_patient_id,
-    extract_time_window,
-    filter_to_standard_19,
-    read_edf,
-)
 from shared.cohort import dedupe_by_pid, filter_and_map_outcome
 from shared.hep_cohort import EXPERIMENTS_ROOT, find_asm_data_dir
 
@@ -89,6 +81,8 @@ COHORTS: Dict[str, Dict[str, object]] = {
 CACHE_DIR = Path(os.environ.get("ASM_EEG_CACHE_DIR") or EXPERIMENTS_ROOT / "outputs" / "eeg_cache")
 CACHE_PATHS = {"alfred": CACHE_DIR / "eeg19_v2_alfred.pkl", "hep": CACHE_DIR / "eeg19_v2_hep.pkl"}
 SKIP_REASONS = ("missing_channels", "units", "flat", "too_short", "non_finite", "read_error")
+# The columns the EEG experiments use from the clinical CSV (no free text).
+PATIENT_FRAME_COLUMNS = ("pid", "outcome", "ASM", "focal", "sex")
 # EDF physical dimensions MNE scales to volts (lower case); "v" is already volts.
 VOLTAGE_UNITS = {"v", "mv", "uv", "\u00b5v", "\u03bcv"}
 
@@ -162,6 +156,10 @@ def process_raw(raw, notch_hz: float) -> Recording:
         SkipRecording: with reason ``missing_channels``, ``units``, ``flat``,
         ``too_short`` or ``non_finite``.
     """
+    # MNE-backed helpers are imported here so that importing this module (for the
+    # cache paths and the loader) does not import MNE.
+    from exp2_fusion.eeg_pipeline import apply_filters, create_windows, extract_time_window, filter_to_standard_19
+
     try:
         raw = filter_to_standard_19(raw)
     except ValueError as exc:
@@ -218,6 +216,12 @@ def _require_voltage_channels(raw) -> None:
     not_eeg = [ch for ch, kind in zip(raw.ch_names, raw.get_channel_types()) if kind != "eeg"]
     if not_eeg:
         raw.set_channel_types({ch: "eeg" for ch in not_eeg}, verbose=False)
+
+
+def read_edf(path: Path):
+    """``exp2_fusion.eeg_pipeline.read_edf`` (MNE), imported on first use."""
+    from exp2_fusion.eeg_pipeline import read_edf as _read_edf
+    return _read_edf(path)
 
 
 def process_edf(path: Path, notch_hz: float, reader: Callable[[Path], object] = read_edf) -> Recording:
@@ -325,7 +329,8 @@ def eeg_patient_frame(eeg_pids: Iterable[str], csv_path: Optional[Path] = None) 
     df = dedupe_by_pid(filter_and_map_outcome(pd.read_csv(csv_path)))
     df["pid"] = df["pid"].astype(str)
     keep = set(str(p) for p in eeg_pids)
-    return df[df["pid"].isin(keep)].reset_index(drop=True)
+    columns = [c for c in PATIENT_FRAME_COLUMNS if c in df.columns]
+    return df.loc[df["pid"].isin(keep), columns].reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------

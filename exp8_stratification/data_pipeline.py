@@ -81,7 +81,6 @@ def prepare_quad_modality_data_with_df(
     text_embeddings = load_text_embeddings(text_model, df)
     logger.info(f"Loaded text embeddings for {len(text_embeddings)} patients")
 
-    # Load cached EEG data
 
     # Filter to patients with ALL 4 modalities
     valid_rows = []

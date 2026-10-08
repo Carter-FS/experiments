@@ -6,6 +6,7 @@ and exp7a (QuadFusionMLP) with configurable EEG embed_dim and aggregator.
 
 import torch
 import torch.nn as nn
+from exp2_fusion.config import N_CHANNELS
 
 import sys
 from pathlib import Path
@@ -101,7 +102,7 @@ class TripleMLPv2(nn.Module):
         eeg_encoder_type="eeg2vec",
         eeg_embed_dim=128,
         aggregator_type="transformer",
-        n_eeg_channels=27,
+        n_eeg_channels=N_CHANNELS,
         n_eeg_times=2000,
         max_windows=120,
         window_chunk_size=32,
@@ -175,7 +176,7 @@ class ClinicalEEGFusionv2(nn.Module):
         eeg_encoder_type="eeg2vec",
         eeg_embed_dim=128,
         aggregator_type="transformer",
-        n_channels=27,
+        n_channels=N_CHANNELS,
         n_times=2000,
         max_windows=120,
         window_chunk_size=32,
@@ -232,7 +233,7 @@ class QuadMLPv2(nn.Module):
         eeg_encoder_type="eeg2vec",
         eeg_embed_dim=128,
         aggregator_type="transformer",
-        n_channels=27,
+        n_channels=N_CHANNELS,
         n_times=2000,
         max_windows=120,
         window_chunk_size=32,
@@ -276,7 +277,7 @@ def test_models():
 
     batch_size = 2
     n_windows = 10  # Small for testing
-    n_channels = 27
+    n_channels = N_CHANNELS
     n_times = 2000
 
     eeg = torch.randn(batch_size, n_windows, n_channels, n_times)

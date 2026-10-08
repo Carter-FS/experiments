@@ -12,6 +12,7 @@ import logging
 from datetime import datetime
 
 import numpy as np
+from exp2_fusion.config import N_CHANNELS
 import optuna
 
 from .config import BASELINES, MODEL_NAMES, RESULTS_DIR, STUDY_DB_PATH
@@ -285,7 +286,7 @@ def _rerun_exp11(params, device):
             hidden_dim=params["hidden_dim"], num_classes=2, dropout=params["dropout"],
             eeg_encoder_type="eeg2vec", eeg_embed_dim=params["eeg_embed_dim"],
             aggregator_type=params["aggregator_type"],
-            n_channels=27, n_times=2000, max_windows=120, window_chunk_size=32,
+            n_channels=N_CHANNELS, n_times=2000, max_windows=120, window_chunk_size=32,
         ).to(device)
 
         from torch.utils.data import DataLoader

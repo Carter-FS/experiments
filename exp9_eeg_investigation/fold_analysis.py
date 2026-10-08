@@ -5,7 +5,6 @@ Particularly focuses on Exp5c fold 4 (AUC 0.866) vs fold 5 (AUC 0.545).
 """
 
 import logging
-import pickle
 import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -19,7 +18,7 @@ sys.path.insert(0, str(BASE_DIR))
 
 from exp8_stratification.stratified_cv import get_multilabel_splits, get_outcome_only_splits
 from exp8_stratification.data_cleaning import load_and_clean_data
-from exp8_stratification.config import CSV_PATH, EEG_CACHE_PATH
+from exp8_stratification.config import EEG_CACHE_PATH
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -31,8 +30,8 @@ def load_eeg_metadata(cache_path: Path = EEG_CACHE_PATH) -> Dict[str, Dict]:
     Returns:
         Dict mapping patient ID to {n_windows, n_padded, n_channels, duration_sec}.
     """
-    with open(cache_path, "rb") as f:
-        eeg_cache = pickle.load(f)
+    from shared.eeg_cache import load_cache
+    eeg_cache = load_cache(cache_path, "raw_uv")
 
     metadata = {}
     for pid, (windows, padding_mask) in eeg_cache.items():
