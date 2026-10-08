@@ -163,6 +163,8 @@ def test_legacy_cache_is_refused_unless_allowed(tmp_path):
         C.cache_info(path)
     out = C.load_cache(path, "raw_uv", allow_legacy=True)
     assert out["p"][0].shape == (120, 27, 2000)
+    with pytest.raises(ValueError, match="raw_uv"):
+        C.load_cache(path, "zscore_window", allow_legacy=True)
 
 
 def test_map_patients_to_edf_matches_exact_ids(tmp_path):
@@ -198,12 +200,14 @@ def test_build_cache_with_synthetic_reader(tmp_path):
     pairs = [(name[0], tmp_path / name) for name in specs]
 
     def reader(path: Path):
-        return synthetic_raw(**specs[path.name], seed=hash(path.name) % 1000)
+        return synthetic_raw(**specs[path.name], seed=sorted(specs).index(path.name))
 
     out = tmp_path / "cache.pkl"
     meta = C.build_cache("alfred", out, reader=reader, pairs=pairs)
     assert meta["n_processed"] == 3 and meta["n_recordings"] == 2
-    assert meta["skipped"] == {"missing_channels": 0, "flat": 0, "too_short": 1, "read_error": 0}
+    assert meta["skipped"] == {"missing_channels": 0, "units": 0, "flat": 0, "too_short": 1,
+                               "non_finite": 0, "read_error": 0}
+    assert meta["incomplete"] is False and meta["n_flat_valid_windows"] == 0
     assert meta["n_recordings_with_leading_flat_segment"] == 1
     assert meta["notch_hz"] == 50.0 and meta["units"] == "uV" and meta["ch_names"] == list(C.CH_NAMES)
     loaded = C.load_cache(out, "labram")
@@ -211,3 +215,62 @@ def test_build_cache_with_synthetic_reader(tmp_path):
     assert np.isfinite(loaded["a"][0]).all()
     entry = pickle.load(open(out, "rb"))["recordings"]["a"]
     assert entry["source_sha256"] is not None and entry["version"] == 2
+
+
+def test_non_finite_samples_skip_the_recording():
+    raw = synthetic_raw(duration_s=700.0)
+    data = raw.get_data()
+    data[3, 1000] = np.nan
+    raw = mne.io.RawArray(data, raw.info, verbose=False)
+    with pytest.raises(C.SkipRecording) as exc:
+        C.process_raw(raw, notch_hz=50.0)
+    assert exc.value.reason == "non_finite"
+
+
+def test_non_voltage_channel_skips_the_recording():
+    raw = synthetic_raw(duration_s=700.0)
+    raw._orig_units = {ch: "uV" for ch in raw.ch_names}
+    raw._orig_units["Cz"] = "mmHg"
+    with pytest.raises(C.SkipRecording) as exc:
+        C.process_raw(raw, notch_hz=50.0)
+    assert exc.value.reason == "units"
+
+
+def test_mis_typed_voltage_channel_is_still_scaled():
+    raw = synthetic_raw(duration_s=700.0)
+    raw.set_channel_types({"Cz": "misc"}, verbose=False)
+    rec = C.process_raw(raw, notch_hz=50.0)
+    sd = rec.windows_uv[~rec.padding_mask].std(axis=-1)
+    assert 6.0 < np.median(sd[:, C.CH_NAMES.index("CZ")]) < 12.0
+
+
+def test_flat_windows_inside_a_recording_are_counted():
+    raw = synthetic_raw(duration_s=900.0)
+    data = raw.get_data()
+    data[:, int(700 * 250):] = 0.0                          # flat for the last 200 s
+    rec = C.process_raw(mne.io.RawArray(data, raw.info, verbose=False), notch_hz=50.0)
+    side = C.summarise({"x": rec.to_entry(None)})
+    assert rec.n_valid == 60 and side["n_flat_valid_windows"] >= 18
+
+
+def test_edf_round_trip_scales_to_microvolts_per_channel(tmp_path):
+    """A 20 uV sine on Fp1 and a 5 uV sine on O2, written to EDF and read back, give
+    window SDs of 14.1 and 3.5 uV in rows 0 and 18 (amplitude / sqrt 2)."""
+    pytest.importorskip("edfio")
+    sfreq, duration_s = 250.0, 700.0
+    t = np.arange(int(duration_s * sfreq)) / sfreq
+    rng = np.random.default_rng(3)
+    data_uv = rng.normal(0.0, 2.0, (len(ALFRED_HEADER_CHANNELS), t.size))
+    data_uv[ALFRED_HEADER_CHANNELS.index("Fp1")] = 20.0 * np.sin(2 * np.pi * 10.0 * t)
+    data_uv[ALFRED_HEADER_CHANNELS.index("O2")] = 5.0 * np.sin(2 * np.pi * 7.0 * t)
+    data_uv[ALFRED_HEADER_CHANNELS.index("ECG+")] = rng.normal(0.0, ECG_SD_UV, t.size)
+    raw = mne.io.RawArray(data_uv * 1e-6, mne.create_info(list(ALFRED_HEADER_CHANNELS), sfreq, ch_types="eeg"),
+                          verbose=False)
+    path = tmp_path / "77_1_1-1-2020.edf"
+    mne.export.export_raw(path, raw, fmt="edf", overwrite=True, verbose=False)
+    rec = C.process_edf(path, notch_hz=50.0)
+    sd = np.median(rec.windows_uv[~rec.padding_mask].std(axis=-1), axis=0)
+    assert sd[0] == pytest.approx(20.0 / np.sqrt(2), rel=0.05)      # FP1 is row 0
+    assert sd[18] == pytest.approx(5.0 / np.sqrt(2), rel=0.05)      # O2 is row 18
+    assert sd.max() < 20.0                                           # the 1 mV ECG is gone
+    assert rec.n_valid == 40

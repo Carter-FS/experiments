@@ -34,12 +34,12 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
-import re
 import hashlib
 import json
 import logging
 import os
 import pickle
+import re
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -82,7 +82,8 @@ COHORTS: Dict[str, Dict[str, object]] = {
 }
 CACHE_DIR = EXPERIMENTS_ROOT / "outputs" / "eeg_cache"
 CACHE_PATHS = {"alfred": CACHE_DIR / "eeg19_v2_alfred.pkl", "hep": CACHE_DIR / "eeg19_v2_hep.pkl"}
-SKIP_REASONS = ("missing_channels", "flat", "too_short", "read_error")
+SKIP_REASONS = ("missing_channels", "units", "flat", "too_short", "non_finite", "read_error")
+VOLTAGE_UNITS = {"V", "mV", "uV", "\u00b5V", "\u03bcV", "nV"}   # EDF physical dimensions MNE scales to volts
 
 
 # ---------------------------------------------------------------------------
@@ -94,8 +95,8 @@ class Recording:
     """One processed recording: windows in microvolts plus the padding mask."""
     windows_uv: np.ndarray      # float32 (MAX_WINDOWS, N_CHANNELS, SAMPLES_PER_WINDOW)
     padding_mask: np.ndarray    # bool (MAX_WINDOWS,), True = padded
-    signal_start_s: float       # seconds of leading flat signal skipped
-    duration_s: float           # recording duration after resampling
+    signal_start_s: float       # seconds of leading flat signal skipped (native-rate grid of 100 s)
+    duration_s: float           # native recording duration before the skip
 
     @property
     def n_valid(self) -> int:
@@ -143,13 +144,16 @@ def find_signal_start(data_uv: np.ndarray, sfreq: float, chunk_s: float = FLAT_C
 def process_raw(raw, notch_hz: float) -> Recording:
     """Turn a loaded MNE Raw into cached windows.
 
-    Steps, in order: keep the 19 standard channels (canonical order), skip the leading
-    flat segment (detected on the unresampled signal, as the supervisor's pipeline
-    does), resample to 200 Hz, convert to microvolts, band-pass and notch, skip 300 s
-    and keep the next 1200 s, split into 10 s windows.
+    Steps, in order: keep the 19 standard channels (canonical order) and check that
+    each is a voltage channel, skip the leading flat segment (detected on the native
+    signal, as the supervisor's pipeline does; the skip lands on the 100 s chunk grid,
+    so up to 99 s of flat signal can remain and is covered by the 300 s skip), resample
+    to 200 Hz, convert to microvolts, band-pass and notch, skip 300 s and keep the next
+    1200 s, split into 10 s windows, reject non-finite values.
 
     Raises:
-        SkipRecording: with reason ``missing_channels``, ``flat`` or ``too_short``.
+        SkipRecording: with reason ``missing_channels``, ``units``, ``flat``,
+        ``too_short`` or ``non_finite``.
     """
     try:
         raw = filter_to_standard_19(raw)
@@ -157,6 +161,7 @@ def process_raw(raw, notch_hz: float) -> Recording:
         raise SkipRecording("missing_channels", str(exc)) from exc
     if list(raw.ch_names) != list(CH_NAMES):
         raise SkipRecording("missing_channels", f"channel order {raw.ch_names} differs from {CH_NAMES}")
+    _require_voltage_channels(raw)
     native_sfreq = float(raw.info["sfreq"])
     duration_s = raw.n_times / native_sfreq
     start = find_signal_start(np.asarray(raw.get_data(units="uV"), dtype=np.float64), native_sfreq)
@@ -182,9 +187,29 @@ def process_raw(raw, notch_hz: float) -> Recording:
                                            max_windows=MAX_WINDOWS)
     if windows.shape != (MAX_WINDOWS, N_CHANNELS, SAMPLES_PER_WINDOW):
         raise RuntimeError(f"unexpected window shape {windows.shape}")
+    if not np.isfinite(windows).all():
+        raise SkipRecording("non_finite", "NaN or infinite samples after filtering")
     return Recording(windows_uv=windows.astype(np.float32, copy=False),
                      padding_mask=padding_mask.astype(bool, copy=False),
                      signal_start_s=signal_start_s, duration_s=duration_s)
+
+
+def _require_voltage_channels(raw) -> None:
+    """Every retained channel must come from a voltage unit, and be typed EEG so that
+    ``get_data(units="uV")`` applies the microvolt scaling.
+
+    MNE converts EDF voltage channels (V, mV, uV) to volts on reading; a channel whose
+    physical dimension is not a voltage is left unscaled and would be mis-scaled here,
+    so the recording is skipped instead. Raw objects without recorded original units
+    (synthetic ``RawArray``) are taken to be in volts, which is MNE's convention.
+    """
+    orig_units = getattr(raw, "_orig_units", None) or {}
+    bad = [ch for ch in raw.ch_names if orig_units.get(ch, "V") not in VOLTAGE_UNITS]
+    if bad:
+        raise SkipRecording("units", f"{len(bad)} channel(s) without a voltage unit")
+    not_eeg = [ch for ch, kind in zip(raw.ch_names, raw.get_channel_types()) if kind != "eeg"]
+    if not_eeg:
+        raw.set_channel_types({ch: "eeg" for ch in not_eeg}, verbose=False)
 
 
 def process_edf(path: Path, notch_hz: float, reader: Callable[[Path], object] = read_edf) -> Recording:
@@ -308,6 +333,7 @@ def summarise(recordings: Dict[str, dict]) -> dict:
     n_valid = np.array([int((~e["padding_mask"]).sum()) for e in recordings.values()])
     window_sd = []
     n_flat_channel = 0
+    n_flat_windows = 0
     n_signal_start = 0
     for e in recordings.values():
         valid = e["windows_uv"][~e["padding_mask"]]
@@ -315,6 +341,7 @@ def summarise(recordings: Dict[str, dict]) -> dict:
             sd = valid.std(axis=-1)                      # (n_valid, channels)
             window_sd.append(float(np.median(sd)))
             n_flat_channel += int((sd.max(axis=0) < ZSCORE_SD_FLOOR_UV).any())
+            n_flat_windows += int((sd.max(axis=1) < FLAT_SD_UV).sum())   # flat in every channel
         n_signal_start += int(e.get("signal_start_s", 0.0) > 0)
     return {
         "n_recordings": len(recordings),
@@ -322,14 +349,20 @@ def summarise(recordings: Dict[str, dict]) -> dict:
         "n_full_length": int((n_valid == MAX_WINDOWS).sum()),
         "median_window_sd_uv": float(np.median(window_sd)) if window_sd else None,
         "n_recordings_with_flat_channel": n_flat_channel,
+        "n_flat_valid_windows": n_flat_windows,
         "n_recordings_with_leading_flat_segment": n_signal_start,
     }
 
 
 def build_cache(cohort: str, out_path: Optional[Path] = None, limit: Optional[int] = None,
                 asm_data_dir: Optional[Path] = None, reader: Callable[[Path], object] = read_edf,
-                pairs: Optional[Sequence[Tuple[str, Path]]] = None) -> dict:
-    """Build the cohort's cache and sidecar; returns the sidecar metadata."""
+                pairs: Optional[Sequence[Tuple[str, Path]]] = None,
+                expect_files: Optional[int] = None) -> dict:
+    """Build the cohort's cache and sidecar; returns the sidecar metadata.
+
+    ``expect_files`` is the number of EDF files the cohort is known to have; a warning
+    is logged and recorded when fewer are found (an incomplete copy of the data).
+    """
     if cohort not in COHORTS:
         raise ValueError(f"cohort must be one of {sorted(COHORTS)}, not {cohort!r}")
     spec = COHORTS[cohort]
@@ -340,6 +373,10 @@ def build_cache(cohort: str, out_path: Optional[Path] = None, limit: Optional[in
         pairs, discovery = list(pairs), {"patients_with_edf": len(pairs)}
     if limit is not None:
         pairs = pairs[:limit]
+    incomplete = expect_files is not None and discovery.get("edf_files", len(pairs)) < expect_files
+    if incomplete:
+        logger.warning("%s: found %s EDF files, expected %d; the cache will be incomplete",
+                       cohort, discovery.get("edf_files"), expect_files)
     notch_hz = float(spec["notch_hz"])
 
     recordings: Dict[str, dict] = {}
@@ -381,6 +418,8 @@ def build_cache(cohort: str, out_path: Optional[Path] = None, limit: Optional[in
         "units": "uV",
         "normalisation": "none (applied by load_cache)",
         "discovery": discovery,
+        "expect_files": expect_files,
+        "incomplete": bool(incomplete),
         "n_processed": len(pairs),
         "skipped": skipped,
         **summarise(recordings),
@@ -393,6 +432,7 @@ def write_cache(path: Path, meta: dict, recordings: Dict[str, dict]) -> None:
     """Write the cache atomically plus its sidecar ``<path>.meta.json``."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    meta = {**meta, **_shape_fields(recordings)}
     payload = {"meta": meta, "recordings": recordings}
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".partial")
     try:
@@ -404,6 +444,16 @@ def write_cache(path: Path, meta: dict, recordings: Dict[str, dict]) -> None:
             os.remove(tmp)
         raise
     sidecar_path(path).write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n")
+
+
+def _shape_fields(recordings: Dict[str, dict]) -> dict:
+    """Channel names and array shape taken from the stored entries themselves."""
+    if not recordings:
+        return {"ch_names": list(CH_NAMES), "n_channels": N_CHANNELS, "max_windows": MAX_WINDOWS,
+                "samples_per_window": SAMPLES_PER_WINDOW}
+    first = next(iter(recordings.values()))
+    return {"ch_names": list(first["ch_names"]), "n_channels": int(first["windows_uv"].shape[1]),
+            "max_windows": int(first["windows_uv"].shape[0]), "samples_per_window": int(first["windows_uv"].shape[2])}
 
 
 def sidecar_path(path: Path) -> Path:
@@ -455,9 +505,15 @@ def load_cache(path: Path, convention: str, allow_legacy: bool = False) -> Dict[
 
     ``windows`` is float32 ``(max_windows, n_channels, samples_per_window)`` and
     ``padding_mask`` is bool ``(max_windows,)``, True for padded windows.
+
+    ``allow_legacy=True`` returns a superseded version-1 cache exactly as stored (its
+    own channels and units, no normalisation) and is accepted only with
+    ``convention="raw_uv"``; it exists for inspection, not for training.
     """
     if convention not in CONVENTIONS:
         raise ValueError(f"convention must be one of {CONVENTIONS}, not {convention!r}")
+    if allow_legacy and convention != "raw_uv":
+        raise ValueError("a legacy cache can only be loaded with convention='raw_uv' (its values are not microvolts)")
     payload = _read_payload(Path(path), allow_legacy)
     if payload["meta"].get("version") == "legacy":
         return {pid: (np.asarray(w, dtype=np.float32), np.asarray(m, dtype=bool))
@@ -470,17 +526,20 @@ def load_cache(path: Path, convention: str, allow_legacy: bool = False) -> Dict[
 
 
 def cache_info(path: Path) -> dict:
-    """The sidecar metadata (version, cohort, channels, counts), read from the pickle."""
-    payload = _read_payload(Path(path), allow_legacy=False)
-    meta = dict(payload["meta"])
-    recordings = payload["recordings"]
-    meta["n_recordings"] = len(recordings)
-    if recordings:
-        first = next(iter(recordings.values()))
-        meta["ch_names"] = list(first["ch_names"])
-        meta["n_channels"] = int(first["windows_uv"].shape[1])
-        meta["max_windows"] = int(first["windows_uv"].shape[0])
-        meta["samples_per_window"] = int(first["windows_uv"].shape[2])
+    """The cache metadata (version, cohort, channels, counts).
+
+    Read from the sidecar when it exists and is newer than or as new as the pickle;
+    otherwise from the pickle itself (which loads the whole cache).
+    """
+    path = Path(path)
+    side = sidecar_path(path)
+    if side.exists() and path.exists() and side.stat().st_mtime >= path.stat().st_mtime:
+        meta = json.loads(side.read_text())
+        if meta.get("version") == CACHE_VERSION:
+            return meta
+    payload = _read_payload(path, allow_legacy=False)
+    meta = {**payload["meta"], **_shape_fields(payload["recordings"])}
+    meta["n_recordings"] = len(payload["recordings"])
     return meta
 
 
@@ -496,13 +555,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     b.add_argument("--out", type=Path, default=None, help="cache path (default outputs/eeg_cache/eeg19_v2_<cohort>.pkl)")
     b.add_argument("--limit", type=int, default=None, help="process only the first N recordings (smoke runs)")
     b.add_argument("--asm-data-dir", type=Path, default=None)
+    b.add_argument("--expect-files", type=int, default=None,
+                   help="EDF files the cohort is known to have; warns if fewer are found")
     s = sub.add_parser("stats", help="print a cache's sidecar metadata")
     s.add_argument("path", type=Path)
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     if args.command == "build":
-        meta = build_cache(args.cohort, args.out, limit=args.limit, asm_data_dir=args.asm_data_dir)
+        meta = build_cache(args.cohort, args.out, limit=args.limit, asm_data_dir=args.asm_data_dir,
+                           expect_files=args.expect_files)
         print(json.dumps(meta, indent=2, sort_keys=True))
         return 0
     print(json.dumps(cache_info(args.path), indent=2, sort_keys=True))
