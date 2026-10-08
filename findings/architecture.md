@@ -241,7 +241,7 @@ EEG (windows) ───→ CNN+Trf → 64D ─┤
 SMILES (768D) ───→ Encoder → 64D ─┘
 ```
 
-### Exp7a: QuadFusionMLP (~2M params)
+### Exp7a: QuadFusionMLP (1.70M params)
 
 | Modality | Input | Encoder | Output |
 |----------|-------|---------|--------|
@@ -255,7 +255,7 @@ SMILES (768D) ───→ Encoder → 64D ─┘
 | FC1 | 256→64 | ReLU | LayerNorm, Dropout(0.3) |
 | Output | 64→2 | - | - |
 
-### Exp7b: QuadFusionMoE (~4.7M params)
+### Exp7b: QuadFusionMoE (6.26M params)
 
 | Component | Configuration |
 |-----------|---------------|
