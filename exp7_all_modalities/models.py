@@ -466,7 +466,7 @@ def test_models():
     # Create dummy inputs
     clinical = torch.randn(batch_size, CLINICAL_DIM)
     text = torch.randn(batch_size, TEXT_DIM)
-    eeg_windows = torch.randn(batch_size, 10, 27, 2000)  # 10 windows for quick test
+    eeg_windows = torch.randn(batch_size, 10, N_CHANNELS, 2000)  # 10 windows for quick test
     padding_mask = torch.zeros(batch_size, 10, dtype=torch.bool)
     smiles = torch.randn(batch_size, SMILES_DIM)
 

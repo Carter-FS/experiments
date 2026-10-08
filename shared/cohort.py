@@ -157,3 +157,35 @@ def assert_oof_no_leakage(fold_pids: Sequence[Sequence]) -> None:
             if p in seen:
                 raise AssertionError(f"pid {p} leaks across folds {seen[p]} and {fi}")
             seen[p] = fi
+
+
+def add_stratification_columns(
+    df: pd.DataFrame,
+    cols: Sequence[str] = ("focal", "sex"),
+    csv_path=None,
+) -> pd.DataFrame:
+    """Copy of ``df`` with the multilabel splitter's covariates joined by pid.
+
+    EEG pipelines that carry only a few columns would otherwise make iterative
+    stratification on outcome/focal/sex fall back to outcome alone. The clean
+    splitter uses this copy to build folds only; row order (and so every fold
+    index) is unchanged. Columns already present are left alone.
+    """
+    missing = [c for c in cols if c not in df.columns]
+    if not missing:
+        return df
+    if csv_path is None:
+        from shared.hep_cohort import ALFRED_CSV
+        csv_path = ALFRED_CSV
+    raw = pd.read_csv(csv_path)
+    raw["outcome"] = pd.to_numeric(raw["outcome"], errors="coerce")
+    raw = dedupe_by_pid(raw[raw["outcome"].isin([1, 2])])
+    lookup = raw.set_index(raw["pid"].astype(str))
+    out = df.copy()
+    pids = out["pid"].astype(str)
+    for col in missing:
+        out[col] = pids.map(lookup[col]).to_numpy()
+    n_unmatched = int(out[missing].isna().all(axis=1).sum())
+    if n_unmatched:
+        logging.getLogger(__name__).warning("%d patients have no %s in the clinical CSV", n_unmatched, missing)
+    return out

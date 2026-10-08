@@ -18,7 +18,7 @@ from .data_pipeline import (
     prepare_data,
 )
 from .models import TripleModalityMLP, TripleModalityFuseMoE
-from exp2_fusion.eeg_pipeline import add_stratification_columns
+from shared.cohort import add_stratification_columns
 from shared.cv_splits import outer_splits, rethreshold, current_seed
 from shared.epoch_selection import run_outer_fold
 

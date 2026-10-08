@@ -49,7 +49,7 @@ from exp6_clinical_triple.data_pipeline import prepare_clinical_smiles_eeg_data,
 from exp6_clinical_triple.training import train_epoch_eeg, evaluate_eeg
 from exp7_all_modalities.data_pipeline import prepare_quad_modality_data, create_quad_modality_datasets
 from exp7_all_modalities.training import train_epoch_mlp as train_epoch_exp7, evaluate_mlp as evaluate_exp7
-from exp2_fusion.eeg_pipeline import add_stratification_columns
+from shared.cohort import add_stratification_columns
 from shared.asm_balancing import WeightedASMDataset, compute_asm_sample_weights
 from shared.epoch_selection import run_outer_fold
 from shared.cv_splits import add_cv_args, cv_suffix, outer_splits, rethreshold

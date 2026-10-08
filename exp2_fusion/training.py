@@ -19,7 +19,7 @@ from exp8_stratification.stratified_cv import get_multilabel_splits, get_outcome
 
 from .config import BATCH_SIZE_BY_ENCODER, CHUNK_SIZE_BY_ENCODER, EMBED_DIM_BY_ENCODER, MODEL_CONFIG, TRAIN_CONFIG
 from .data_pipeline import EEGSMILESDataset, create_datasets, get_max_channels, prepare_data
-from .eeg_pipeline import add_stratification_columns
+from shared.cohort import add_stratification_columns
 from shared.asm_balancing import WeightedASMDataset, compute_asm_sample_weights, weighted_cross_entropy
 from shared.cv_splits import outer_splits, rethreshold, current_seed
 from shared.epoch_selection import run_outer_fold

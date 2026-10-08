@@ -141,7 +141,7 @@ class ClinicalSMILESEEGFusion(nn.Module):
     Architecture:
         Clinical (20D) -> Encoder -> 64D
         SMILES (768/256D) -> Encoder -> 64D
-        EEG (num_windows, 27, 2000) -> SimpleCNN/EEG2Vec -> Aggregator -> 64D
+        EEG (num_windows, 19, 2000) -> SimpleCNN/EEG2Vec -> Aggregator -> 64D
         Concatenate -> 192D -> Classifier -> 2 classes
     """
 
@@ -345,7 +345,7 @@ def test_models():
     # Test Clinical + SMILES + EEG
     print("\nTesting ClinicalSMILESEEGFusion:")
     smiles_small = torch.randn(batch_size, 256)
-    eeg_windows = torch.randn(batch_size, 120, 27, 2000)
+    eeg_windows = torch.randn(batch_size, 120, N_CHANNELS, 2000)
     padding_mask = torch.zeros(batch_size, 120, dtype=torch.bool)
     padding_mask[:, 90:] = True  # Last 30 windows are padded
 

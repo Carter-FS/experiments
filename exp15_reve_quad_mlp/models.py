@@ -3,7 +3,7 @@
 QuadFusionREVE is structurally identical to QuadFusionMLP from
 exp7_all_modalities/models.py except for the EEG branch:
 
-  - exp7's EEG branch:   raw windows (B, 120, 27, 2000)
+  - exp7's EEG branch:   raw windows (B, 120, 19, 2000)
                          -> EEG2Vec window encoder (B, 120, 256)
                          -> EEGWindowTransformer aggregator (B, 64)
   - exp15's EEG branch:  pre-computed REVE features (B, 120, 512)

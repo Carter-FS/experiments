@@ -23,7 +23,7 @@ REPO = Path(__file__).resolve().parents[2]
 EXPERIMENT_DIRS = sorted(p for p in REPO.glob("exp*") if p.is_dir()) + [REPO / "shared", REPO / "thesisStandalone" / "analysis"]
 SUPERSEDED = re.compile(r"processed_eeg(?!\*)|preprocess_all_eeg\(|get_valid_patient_eeg_pairs\(|cache_eeg=|force_reprocess=")
 # A 27-channel default or literal input shape anywhere in the experiment code.
-OLD_MONTAGE = re.compile(r"(n_channels|n_eeg_channels|max_channels)\s*(:\s*int)?\s*=\s*27\b|\(\s*\d+\s*,\s*27\s*,\s*2000\s*\)")
+OLD_MONTAGE = re.compile(r"(n_channels|n_eeg_channels|max_channels)\s*(:\s*int)?\s*=\s*27\b|,\s*27\s*,\s*2000\s*\)")
 # Files allowed to mention the old names: the pipeline that still defines the legacy
 # helpers, the superseded Stage C builder, exploratory analyses that are not rerun, and tests.
 ALLOWED = {"exp2_fusion/eeg_pipeline.py", "thesisStandalone/analysis/hep_eeg_preprocess.py",
@@ -78,6 +78,14 @@ def test_configs_use_the_v2_cache_and_19_channels(module):
         if isinstance(conf, dict) and "n_channels" in conf:
             assert conf["n_channels"] == 19, (module, name)
     assert cfg.N_CHANNELS == 19
+
+
+def test_exp2_and_exp3_prepare_through_the_loader():
+    for module in ("exp2_fusion.data_pipeline", "exp3_fusion.data_pipeline"):
+        dp = importlib.import_module(module)
+        assert dp.EEG_CONVENTION == "zscore_window" and dp.EEG_CACHE_PATH == C.CACHE_PATHS["alfred"]
+        src = inspect.getsource(dp.prepare_data)
+        assert "load_cache(EEG_CACHE_PATH, EEG_CONVENTION)" in src and "eeg_patient_frame(eeg_data.keys())" in src
 
 
 def test_exp18_and_portable_paths_are_v2():

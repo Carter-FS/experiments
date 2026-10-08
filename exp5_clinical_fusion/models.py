@@ -178,7 +178,7 @@ class ClinicalEEGFusion(nn.Module):
 
     Architecture:
         Clinical (20D) -> Encoder -> 64D
-        EEG (num_windows, 27, 2000) -> EEG2Vec -> Aggregator -> 64D
+        EEG (num_windows, 19, 2000) -> EEG2Vec -> Aggregator -> 64D
         Concatenate -> 128D -> Classifier -> 2 classes
     """
 
@@ -379,7 +379,7 @@ def test_models():
 
     # Test Clinical + EEG
     print("\nTesting ClinicalEEGFusion:")
-    eeg_windows = torch.randn(batch_size, 120, 27, 2000)
+    eeg_windows = torch.randn(batch_size, 120, N_CHANNELS, 2000)
     padding_mask = torch.zeros(batch_size, 120, dtype=torch.bool)
     padding_mask[:, 90:] = True  # Last 30 windows are padded
 

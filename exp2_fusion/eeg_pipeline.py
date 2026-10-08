@@ -466,6 +466,10 @@ class EEGNormaliser:
 def build_patient_eeg_map(eeg_dir: Path = EEG_DIR) -> Dict[str, Path]:
     """Build mapping from patient ID to EEG file path.
 
+    Superseded for the experiments by ``shared.eeg_cache.map_patients_to_edf``
+    (same exact-id rule, recursive scan, all file-name forms); kept for the
+    exploratory quality analysis.
+
     Returns:
         Dictionary mapping patient ID (string) to EEG file path.
     """
@@ -894,96 +898,22 @@ class EEGPreprocessor:
         }
 
 
-def get_valid_patient_eeg_pairs(
-    csv_path: Path = CSV_PATH,
-    eeg_dir: Path = EEG_DIR,
-) -> pd.DataFrame:
-    """Get dataframe of patients with valid EEG files and outcomes.
-
-    Returns:
-        DataFrame with columns: pid, outcome, eeg_path, ASM
-    """
-    # Load CSV
-    df = pd.read_csv(csv_path)
-
-    # Filter for valid outcomes
-    df["outcome"] = pd.to_numeric(df["outcome"], errors="coerce")
-    df = df[df["outcome"].isin([1, 2])].copy()
-
-    # Map raw outcomes through the single shared mapping (1 = success -> 1).
-    from shared.cohort import OUTCOME_MAPPING
-    df["outcome"] = df["outcome"].map(OUTCOME_MAPPING)
-
-    # Build EEG map
-    eeg_map = build_patient_eeg_map(eeg_dir)
-
-    # Add EEG paths
-    df["eeg_path"] = df["pid"].astype(str).map(eeg_map)
-
-    # Filter for patients with EEG files
-    df = df[df["eeg_path"].notna()].copy()
-
-    # Select relevant columns
-    result = df[["pid", "outcome", "eeg_path", "ASM"]].copy()
-    result["eeg_path"] = result["eeg_path"].astype(str)
-
-    return result
-
-
-def add_stratification_columns(
-    df: pd.DataFrame,
-    cols: Tuple[str, ...] = ("focal", "sex"),
-    csv_path: Path = CSV_PATH,
-) -> pd.DataFrame:
-    """Copy of ``df`` with the multilabel splitter's covariates joined by pid.
-
-    ``get_valid_patient_eeg_pairs`` keeps only pid/outcome/eeg_path/ASM, so
-    iterative stratification on outcome/focal/sex silently skips the missing
-    columns and stratifies on outcome alone. The clean splitter uses this copy
-    to build folds only; row order (and so every fold index) is unchanged.
-    Columns already present are left alone.
-    """
-    from shared.cohort import dedupe_by_pid
-
-    missing = [c for c in cols if c not in df.columns]
-    if not missing:
-        return df
-    raw = pd.read_csv(csv_path)
-    raw["outcome"] = pd.to_numeric(raw["outcome"], errors="coerce")
-    raw = dedupe_by_pid(raw[raw["outcome"].isin([1, 2])])
-    lookup = raw.set_index(raw["pid"].astype(str))
-    out = df.copy()
-    pids = out["pid"].astype(str)
-    for col in missing:
-        out[col] = pids.map(lookup[col]).to_numpy()
-    n_unmatched = int(out[missing].isna().all(axis=1).sum())
-    if n_unmatched:
-        logger.warning(f"{n_unmatched} patients have no {missing} in {csv_path.name}")
-    return out
-
-
 def test_pipeline():
     """Test the EEG pipeline on a sample file."""
     print("Testing EEG pipeline...")
 
-    # Get patient-EEG pairs
-    df = get_valid_patient_eeg_pairs()
-    print(f"Found {len(df)} patients with EEG and valid outcomes")
+    # Patient-EEG pairs by exact id (the cache builder's rule)
+    patient_map = build_patient_eeg_map()
+    print(f"Found {len(patient_map)} patients with an EEG file")
 
-    if len(df) == 0:
-        print("No valid patients found!")
+    if not patient_map:
+        print("No EEG files found!")
         return
 
-    # Test on first patient
-    sample = df.iloc[0]
-    print(f"\nTesting on patient {sample['pid']}")
-    print(f"EEG file: {sample['eeg_path']}")
-    print(f"Outcome: {sample['outcome']}")
-    print(f"ASM: {sample['ASM']}")
-
-    # Process EEG
+    # Process the first recording (ids are not printed)
+    eeg_path = next(iter(sorted(patient_map.values())))
     preprocessor = EEGPreprocessor()
-    result = preprocessor.process(Path(sample["eeg_path"]))
+    result = preprocessor.process(Path(eeg_path))
 
     if result is None:
         print("EEG too short, skipping")

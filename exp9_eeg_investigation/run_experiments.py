@@ -25,7 +25,7 @@ sys.path.insert(0, str(BASE_DIR))
 
 from exp2_fusion.config import EEG_CONFIG, MODEL_CONFIG, TRAIN_CONFIG, BATCH_SIZE_BY_ENCODER, CHUNK_SIZE_BY_ENCODER
 from exp2_fusion.data_pipeline import prepare_data, create_datasets, get_max_channels
-from exp2_fusion.eeg_pipeline import add_stratification_columns
+from shared.cohort import add_stratification_columns
 from exp2_fusion.models.eeg_encoders import get_eeg_encoder, SimpleCNNEncoder
 from exp2_fusion.models.eeg_transformer import EEGWindowTransformer
 from exp2_fusion.models.aggregators import get_aggregator

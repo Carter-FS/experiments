@@ -17,7 +17,7 @@ def test_labram_shapes():
     n_times = int(EEG_CONFIG["window_sec"] * EEG_CONFIG["target_sr"])  # 2000
     test_cases = [
         (19, 128, "19-channel montage"),
-        (27, 128, "27-channel montage"),
+        (19, 128, "19-channel montage"),
     ]
 
     for n_channels, emb_size, desc in test_cases:
@@ -39,7 +39,7 @@ def test_eegnet_shapes():
     n_times = int(EEG_CONFIG["window_sec"] * EEG_CONFIG["target_sr"])  # 2000
     test_cases = [
         (19, 256, "19-channel montage"),
-        (27, 256, "27-channel montage"),
+        (19, 256, "19-channel montage"),
     ]
 
     for n_channels, emb_size, desc in test_cases:
@@ -60,7 +60,7 @@ def test_labram_chunked_processing():
         print("SKIP: LaBraM not available")
         return
 
-    n_channels = 27
+    n_channels = 19
     n_times = 2000
     emb_size = 128
     chunk_size = CHUNK_SIZE_BY_ENCODER.get("labram", 4)
