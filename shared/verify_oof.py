@@ -27,22 +27,24 @@ from pathlib import Path
 from shared.cohort import assert_oof_no_leakage
 
 # (regex on the "<dir>/<file>" path, expected unique-pid count), most specific
-# first - the first match wins. Cohort size is set by the modality combination:
-# quad / text+eeg = 107, + one text = 117, + one eeg = 147, clinical(+smiles) = 198.
+# first - the first match wins. Cohort size is set by the modality combination;
+# the EEG sizes are those of the version-2 cache built on M3 on 2026-10-09
+# (analysis plan Addendum C): text+eeg = 108, + one text = 117, + one eeg = 148,
+# clinical(+smiles) = 198. Every EEG feature set (REVE, LaBraM) is written from
+# that cache, so exp15 has the same 108 as exp7.
 # Anchored on '_' delimiters so 'exp1' cannot match an 'exp11' filename.
 EXPECTED_COUNTS = [
-    (r"exp7_predictions/predictions_oof", 107),        # quad headline (7a) + 7b MoE
-    (r"exp15_predictions/predictions_oof", 108),       # REVE quad (107 shared with
-    #  the EEG2Vec quad + pid 187, whose EEG REVE's preprocessing accepts)
-    (r"exp16_predictions/predictions_oof", 107),       # reduced-capacity quad (same 107 as exp7)
-    (r"exp17_predictions/predictions_oof", 82),        # focal-only quad (focal subset of the 107)
-    (r"exp9_predictions/predictions_oof", 147),        # standalone EEG encoder sweep
+    (r"exp7_predictions/predictions_oof", 108),        # quad headline (7a) + 7b MoE
+    (r"exp15_predictions/predictions_oof", 108),       # quad on stored EEG features (both feature sets)
+    (r"exp16_predictions/predictions_oof", 108),       # reduced-capacity quad (same 108 as exp7)
+    (r"exp17_predictions/predictions_oof", 83),        # focal-only quad (focal subset of the 108)
+    (r"exp9_predictions/predictions_oof", 148),        # standalone EEG encoder sweep
     (r"exp19_predictions/predictions_oof_exp19_(D|D-tok|D-split|T6a)_", 117),  # configurations needing an EEG report
     (r"exp19_predictions/predictions_oof_exp19_", 198),          # serialised/tabular clinical cohort
-    (r"exp11_6b", 147), (r"exp11_(3a|7a)", 107),       # exp11 sub-configs (base leads the name)
-    (r"_exp3[ab]_", 107),
+    (r"exp11_6b", 148), (r"exp11_(3a|7a)", 108),       # exp11 sub-configs (base leads the name)
+    (r"_exp3[ab]_", 108),
     (r"_exp1[ab]_", 117), (r"_exp5b_", 117), (r"_exp6a_", 117),
-    (r"_exp2_", 147), (r"_exp5c_", 147), (r"_exp6b_", 147),
+    (r"_exp2_", 148), (r"_exp5c_", 148), (r"_exp6b_", 148),
     (r"_exp4[ab]_", 198), (r"_exp5a_", 198),
 ]
 

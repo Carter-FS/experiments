@@ -11,29 +11,34 @@ import pytest
 
 from shared.verify_oof import expected_for, missing_expected, verify_file
 
-# (real prediction-file rel path -> expected unique-pid cohort). exp1-6 names
+# (real prediction-file rel path -> expected unique-pid cohort; the EEG sizes are
+# those of the version-2 cache, Addendum C). exp1-6 names
 # come from each config; exp7 --mode predictions writes the bare headline file;
 # exp11 config names already start "exp11_" and run_experiments prepends another,
 # so its files carry a doubled prefix. Suffixes match --asm-balance.
 FILENAME_COHORTS = {
     "exp1_predictions/predictions_oof_exp1a_clinicalbert_chemberta.json": 117,
     "exp1_predictions/predictions_oof_exp1b_pubmedbert_smilestrf_asmweighted.json": 117,
-    "exp2_predictions/predictions_oof_exp2_simplecnn_chemberta_mlp.json": 147,
-    "exp2_predictions/predictions_oof_exp2_simplecnn_smilestrf_fusemoe_asmweighted.json": 147,
-    "exp3_predictions/predictions_oof_exp3a_clinicalbert_chemberta.json": 107,
-    "exp3_predictions/predictions_oof_exp3b_pubmedbert_smilestrf.json": 107,
+    "exp2_predictions/predictions_oof_exp2_simplecnn_chemberta_mlp.json": 148,
+    "exp2_predictions/predictions_oof_exp2_simplecnn_smilestrf_fusemoe_asmweighted.json": 148,
+    "exp3_predictions/predictions_oof_exp3a_clinicalbert_chemberta.json": 108,
+    "exp3_predictions/predictions_oof_exp3b_pubmedbert_smilestrf.json": 108,
     "exp4_predictions/predictions_oof_exp4a_mlp.json": 198,
     "exp4_predictions/predictions_oof_exp4b_attention_asmweighted.json": 198,
     "exp5_predictions/predictions_oof_exp5a_chemberta.json": 198,
     "exp5_predictions/predictions_oof_exp5b_clinicalbert.json": 117,
-    "exp5_predictions/predictions_oof_exp5c_eeg2vec.json": 147,
+    "exp5_predictions/predictions_oof_exp5c_eeg2vec.json": 148,
     "exp6_predictions/predictions_oof_exp6a_clinicalbert_chemberta.json": 117,
-    "exp6_predictions/predictions_oof_exp6b_simplecnn_chemberta.json": 147,
-    "exp7_predictions/predictions_oof.json": 107,
-    "exp7_predictions/predictions_oof_asmweighted.json": 107,
-    "exp11_predictions/predictions_oof_exp11_exp11_3a_clinicalbert_chemberta_trf.json": 107,
-    "exp11_predictions/predictions_oof_exp11_exp11_6b_chemberta_meanmax_asmweighted.json": 147,
-    "exp11_predictions/predictions_oof_exp11_exp11_7a_pubmedbert_chemberta_meanmax.json": 107,
+    "exp6_predictions/predictions_oof_exp6b_simplecnn_chemberta.json": 148,
+    "exp7_predictions/predictions_oof.json": 108,
+    "exp7_predictions/predictions_oof_asmweighted.json": 108,
+    "exp15_predictions/predictions_oof_reve_v2_sp-multilabel_rf5_s42.json": 108,
+    "exp15_predictions/predictions_oof_labram_v2_asmweighted_sp-multilabel_rf5_s43.json": 108,
+    "exp17_predictions/predictions_oof_sp-multilabel_rf5_s42.json": 83,
+    "exp9_predictions/predictions_oof_exp9_encoder_reve_frozen_sp-multilabel_rf5_s42.json": 148,
+    "exp11_predictions/predictions_oof_exp11_exp11_3a_clinicalbert_chemberta_trf.json": 108,
+    "exp11_predictions/predictions_oof_exp11_exp11_6b_chemberta_meanmax_asmweighted.json": 148,
+    "exp11_predictions/predictions_oof_exp11_exp11_7a_pubmedbert_chemberta_meanmax.json": 108,
     "exp19_predictions/predictions_oof_exp19_A_llama31_8b_mean_mlp_sp-multilabel_iv20_s42.json": 198,
     "exp19_predictions/predictions_oof_exp19_T5a-full_lr_sp-multilabel_iv20_s43.json": 198,
     "exp19_predictions/predictions_oof_exp19_B-imp_pubmedbert_mean_pca32_sp-multilabel_iv20_s43.json": 198,
@@ -50,7 +55,7 @@ def test_expected_for_matches_real_filenames(rel, cohort):
 
 def test_exp1_pattern_does_not_match_exp11():
     # exp1's pattern must not swallow an exp11 file (real doubled-prefix name).
-    assert expected_for("exp11_predictions/predictions_oof_exp11_exp11_3a_x_y_z.json") == 107
+    assert expected_for("exp11_predictions/predictions_oof_exp11_exp11_3a_x_y_z.json") == 108
 
 
 def test_verify_file_flags_cross_fold_leakage(tmp_path):

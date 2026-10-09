@@ -650,3 +650,119 @@ multilabel (`shared/cv_splits.py:94-114`; exp18 joint key at
 `run_experiments.py:170-171`). Recorded here so that the Methods statement has
 a single source. No rerun is planned for this item: the inner folds choose only
 the epoch count and the threshold, and the outer test folds are unaffected.
+
+## Addendum C (2026-10-09, before any EEG rerun): EEG inputs, pretrained encoders and the EEG rerun
+
+### C.1 Defects in the EEG inputs of every run to date
+
+Found 2026-10-09 while compiling the training configurations
+(`findings/training_configurations.md`):
+
+- The EEG cache read by every EEG experiment (`outputs/eeg_cache/processed_eeg.pkl`)
+  held 27 channels: the 19 standard 10-20 EEG channels plus EMG+/EMG-, PG1/PG2,
+  ECG+/ECG- and A1/A2, which the EDF headers type as EEG. Channel selection was by
+  header type, not by name.
+- The windows were in volts and no amplitude normalisation was applied, so the
+  BatchNorm layers of the trained encoders saw values of the order of 1e-5 against an
+  epsilon of 1e-5 (EEG2Vec, SimpleCNN) or 1e-3 (EEGNet).
+- The "LaBraM" row of the encoder comparison was braindecode 1.2's `Labram`
+  architecture with 2 layers, 4 heads and a 128-dimensional embedding, trained from
+  random initialisation; the published pretrained weights were never loaded.
+- The REVE features (`outputs/reve_features_*.npz`, version 1) were extracted from a
+  separate 19-channel cache with a per-window z-score and a 5-SD clip.
+
+Every result that depends on EEG (exp2, exp3, exp5c, exp6b, exp7a/7b, exp9, exp11,
+exp15, exp16, exp17, the HEP1 EEG and reduced models, exp18 Exp5c/Exp6b/Exp7a) is
+superseded; the paper's EEG statements are marked pending until the rerun.
+
+### C.2 Version-2 EEG cache (`shared/eeg_cache.py`)
+
+- Channels: exactly the 19 standard 10-20 channels selected by name
+  (FP1 FP2 F7 F3 FZ F4 F8 T7 C3 CZ C4 T8 P7 P3 PZ P4 P8 O1 O2; legacy names
+  T3/T4/T5/T6 mapped to T7/T8/P7/P8); a recording missing any of them is skipped.
+- Units: the EDF physical dimension must be a voltage unit; data are stored in
+  microvolts.
+- A leading flat segment (100-s chunks with SD below 0.01 microvolts on every
+  channel) is skipped before resampling, as in the supervisor's pipeline.
+- 200 Hz; 0.1-75 Hz zero-phase FIR; notch 50 Hz (Melbourne) or 60 Hz (HEP1);
+  the first 300 s skipped, the next 1200 s used, recordings shorter than 600 s
+  skipped; 10-s windows, at most 120, zero-padded with a mask.
+- Amplitude conventions applied at load time (`load_cache(path, convention)`):
+  `zscore_window` (per window and channel, mean 0 and SD 1, SD floor 1e-6
+  microvolts, no clipping) for every trained-from-scratch encoder and for REVE;
+  `labram` (microvolts divided by 100) for the pretrained LaBraM.
+- Each cache carries a sidecar with aggregate statistics only (no patient ids).
+
+Caches built on M3 on 2026-10-09 (`shared/eeg_cache.py` at commit 46cc3f5,
+`--expect-files 157` and `98`):
+
+| Cohort | EDF files | CSV patients with an EDF | Kept | Skipped | Leading flat segment | Median per-window SD (microvolts) | Full length (120 windows) | Fewest windows |
+|---|---|---|---|---|---|---|---|---|
+| Melbourne (Alfred) | 157 | 148 (9 files match no CSV patient) | 148 | 0 | 50 | 8.59 | 114 | 37 |
+| HEP1 | 98 | 96 (one patient with two files) | 95 | 1 (shorter than 600 s) | 0 | 2.89 | 86 | 90 |
+
+Frozen cohorts for the rerun: Melbourne EEG cohort 148 patients (72 with outcome 1
+and 76 with outcome 0 under the B.1 coding), of whom 108 also have a usable EEG report
+(the text + EEG and four-modality cohort) and 83 of those have focal epilepsy; HEP1
+EEG cohort 95 patients (32 with outcome 1 and 63 with outcome 0 under HEP1's own
+coding). `shared/verify_oof.py` requires these counts.
+
+### C.3 Pretrained EEG encoders as frozen per-window features
+
+- LaBraM-base: the Hugging Face snapshot `braindecode/labram-pretrained` at revision
+  0563b6c626e7b40d9a36653b763715db94d945d7, whose 221 tensors are bit-identical, by
+  name, to the official `labram-base.pth` (sha256 7c505838...bb57c37c; checked by
+  `shared/labram_pretrained.py verify-official`). The 19-channel model keeps the
+  pretrained channel embeddings selected by name, with the four temporal channels
+  under the legacy names T3/T4/T5/T6 used by the official clinical fine-tuning runs,
+  and the temporal embedding cut to ten 1-s patches plus [CLS]. Input microvolts/100.
+  Per-window feature: the mean over the 190 patch tokens through a parameter-free
+  LayerNorm (`use_mean_pooling=True`, the official fine-tuning default); the [CLS]
+  feature is stored alongside. Files `outputs/labram_features_v2_<cohort>.npz`
+  (200-dimensional).
+- REVE-base (`brain-bzh/reve-base`): attention-pooled 512-dimensional feature per
+  window from the `zscore_window` cache. Files `outputs/reve_features_v2_<cohort>.npz`.
+- Both feature sets are checked against their cache (same patients, same padding
+  masks) before a run (`python -m shared.eeg_features check`).
+- The architecture of braindecode 1.6.0.dev1024's `Labram` is carried in
+  `shared/vendor/labram.py` (BSD-3-Clause) for the training environment, which cannot
+  install that release; a reference fixture recorded from the upstream model is
+  reproduced by the vendored copy to 1e-5 of the output scale.
+
+### C.4 Configurations
+
+- exp9 encoder comparison on the version-2 cache: `baseline_simplecnn_transformer`,
+  `encoder_eegnet`, `encoder_eeg2vec`, `encoder_labram_scratch` (the 2-layer
+  architecture trained from scratch, formerly `encoder_labram`),
+  `encoder_labram_pretrained_frozen` (LaBraM-base features, 200 wide) and
+  `encoder_reve_frozen` (REVE-base features, 512 wide); the two frozen arms go through
+  the same window aggregator and head as the others (encoder type `precomputed`) and
+  replace the standalone REVE row. The aggregator's token width equals each arm's
+  embedding; its output is 256 throughout. A fine-tuned LaBraM-base arm with the
+  official recipe (learning rate 5e-4, weight decay 0.05, layer decay 0.65, drop path
+  0.1, warm-up) is scheduled after the frozen-feature results.
+- exp15 runs on each feature set (`--feature-set reve_v2` and `labram_v2`), both
+  ASM-balance modes; outputs carry the feature-set tag.
+- exp5 and exp6 rerun their EEG rows only (5c, 6b); every other configuration keeps
+  its clean-rerun results.
+- Training settings are otherwise those of Addendum B (refit protocol, five seeds
+  42-46, exp18 EEG configurations seeds 42-44).
+
+### C.5 Rerun
+
+- Items: exp2, exp3, exp5 (5c), exp6 (6b), exp7a, exp7b, exp7a_stratbatch, exp9
+  (all arms; the aggregator and embedding ablations stay deferred), exp11, exp15 (both
+  feature sets), exp16, exp17, hep_eeg (and its harmonised-label sensitivity),
+  hep_reduced, exp18 Exp5c/Exp6b/Exp7a; 373 work items in the GPU list and 190 in the
+  CPU list after the change, of which the pending ones are submitted
+  (`rerun_clean.sh pending-array`).
+- Before submission `rerun_clean.sh archive-eeg` moves every output that depended on
+  the previous cache, the previous caches, the version-1 REVE features, the derived
+  thesis tables and the done markers of the EEG tasks to
+  `outputs/_archive_eeg_defect_20261009/`; it halts if any such file is newer than the
+  version-2 cache.
+- Every entry point was exercised end to end on this laptop's subset of the data
+  with the smoke mode (`--smoke`: one outer fold, two inner folds, two epochs, outputs
+  tagged `_smoke` and never read as results) before submission.
+- `shared/verify_oof.py` and the expected-file manifest name the new arms and files
+  and the counts of C.2.
