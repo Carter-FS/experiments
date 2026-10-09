@@ -162,8 +162,15 @@ patience 20, gradient clipping 1.0, no ASM balancing.
 | SimpleCNN | 4 Conv1d layers, Dropout 0.1 | 256 | no, trained from scratch |
 | EEGNet | braindecode EEGNet (F1 8, D 2, F2 16) | 256 | no, trained from scratch |
 | EEG2Vec | EEGNet-style variational encoder (mean head only) | 256 | no, architecture reimplemented and trained from scratch |
-| LaBraM | braindecode Labram architecture (2 layers, 4 heads, patch 200) | 128 | no: the architecture only, trained from scratch, not the published pretrained weights |
-| REVE-base | frozen pretrained REVE-base features | 512 | yes, frozen |
+| LaBraM (scratch), arm `encoder_labram_scratch` | braindecode 1.2 Labram architecture (2 layers, 4 heads, patch 200) | 128 | no: the architecture only, trained from scratch, not the published pretrained weights |
+| LaBraM-base (pretrained, frozen), arm `encoder_labram_pretrained_frozen` | published LaBraM-base weights (12 layers, 10 heads, patch 200; Section 1a), features computed once per window (`shared/labram_pretrained.py`), read as the `labram_v2` feature set | 200 | yes, frozen |
+| REVE-base (pretrained, frozen), arm `encoder_reve_frozen` | published REVE-base weights, attention-pooled features computed once per window (`reve_extract_features.py`), read as the `reve_v2` feature set | 512 | yes, frozen |
+
+Both frozen arms go through the same aggregator and head as the trained-from-scratch
+encoders (encoder type `precomputed`, `shared/eeg_features.py`); the standalone REVE
+script no longer supplies the encoder-table row. The raw-EEG arms read the cache under
+the per-window z-score; the feature sets were written from the same cache. A fine-tuned
+LaBraM-base arm is scheduled after the frozen-feature results.
 
 The exp9 aggregator ablations (attention, LSTM, max, mean-max, depth 1 and 4, embedding
 64 and 128) use the same settings. `aggregator_depth_0` is the same model as

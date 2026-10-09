@@ -19,7 +19,12 @@ RESULTS_DIR = OUTPUTS_DIR / "exp15_results"
 # Pre-computed REVE-base per-window features
 # Shape (n_patients, max_windows=120, embed_dim=512), pids array,
 # valid_window_counts array
-REVE_FEATURES_PATH = OUTPUTS_DIR / "reve_features_v2_alfred.npz"   # from the version-2 cache (reve_extract_features.py)
+# Stored per-window EEG feature sets (shared.eeg_features): REVE-base by default,
+# LaBraM-base with --feature-set labram_v2. Both are written from the version-2 cache.
+from shared.eeg_features import FEATURE_SETS, feature_path  # noqa: E402
+
+DEFAULT_FEATURE_SET = "reve_v2"
+REVE_FEATURES_PATH = feature_path(DEFAULT_FEATURE_SET, "alfred")
 
 # Clinical feature configuration (re-used from exp4)
 CLINICAL_CONFIG = {
@@ -49,7 +54,7 @@ ASM_NAMES_FILE = OUTPUTS_DIR / "asm_drug_names.txt"
 # Embedding dimensions
 CLINICAL_DIM = _EXP4_CLINICAL_DIM
 TEXT_DIM = 768
-REVE_DIM = 512        # REVE-base attention-pooled per-window embedding
+REVE_DIM = FEATURE_SETS[DEFAULT_FEATURE_SET]["dim"]   # width of the default feature set (REVE-base: 512)
 EEG_AGG_DIM = 256     # the aggregator's embed_dim - matches exp7's EEG2Vec aggregator
 SMILES_DIM = 768
 

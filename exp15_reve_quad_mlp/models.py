@@ -119,9 +119,11 @@ def get_model(
     text_model: str = None,
     smiles_model: str = None,
     device: torch.device = None,
+    reve_dim: int = REVE_DIM,
 ) -> nn.Module:
     """Create QuadFusionREVE. The fusion arg is kept for signature parity with
-    exp7.get_model; only "mlp" is supported in exp15.
+    exp7.get_model; only "mlp" is supported in exp15. ``reve_dim`` is the width of
+    the stored per-window features (512 for REVE-base, 200 for LaBraM-base).
     """
     if fusion != "mlp":
         raise ValueError(
@@ -130,6 +132,7 @@ def get_model(
         )
     config = MLP_CONFIG
     model = QuadFusionREVE(
+        reve_dim=reve_dim,
         hidden_dim=config["hidden_dim"],
         num_classes=config["num_classes"],
         dropout=config["dropout"],

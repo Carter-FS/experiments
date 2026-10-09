@@ -1,19 +1,14 @@
-"""Data pipeline for Experiment 15: REVE-based quad-modal fusion.
+"""Data pipeline for Experiment 15: quad-modal fusion on stored EEG features.
 
-Mirrors exp7_all_modalities/data_pipeline.py but replaces the raw-EEG
-cache load with a pre-computed REVE feature load. Cohort intersection
-is the same logic (clinical outcome valid AND REVE features available
+Mirrors exp7_all_modalities/data_pipeline.py but replaces the raw-EEG cache load with
+a stored per-window feature set (``shared.eeg_features``: REVE-base by default, or
+LaBraM-base), written from the version-2 EEG cache by a frozen pretrained encoder.
+Cohort intersection is the same logic (clinical outcome valid AND features available
 AND text embedding available AND SMILES vocabulary entry available).
 
-The REVE feature .npz was produced by
-``thesisStandalone/analysis/reve_extract_features.py`` and contains:
-  - features: float32 (n_patients, max_windows=120, 512)
-  - pids: string (n_patients,)
-  - valid_window_counts: int32 (n_patients,)
-
-Padded window positions in the features array are zero-filled. We
-reconstruct the per-patient padding mask as
-``mask[i, j] = (j >= valid_window_counts[i])``.
+A feature file holds ``features`` float32 (n_patients, max_windows=120, dim), ``pids``
+and ``valid_window_counts``; padded window positions are zero-filled and the loader
+reconstructs the per-patient padding mask as ``mask[j] = (j >= valid_window_counts)``.
 """
 
 import logging
@@ -31,11 +26,12 @@ from .config import (
     CSV_PATH,
     MAX_WINDOWS,
     OUTCOME_MAPPING,
-    REVE_FEATURES_PATH,
+    DEFAULT_FEATURE_SET,
     SMILES_EMBEDDINGS,
     TEXT_EMBEDDINGS,
 )
 from shared.cohort import dedupe_by_pid, filter_and_map_outcome, smiles_vector
+from shared.eeg_features import load_features
 
 # Reuse exp4's clinical preprocessor + cleaning utilities. No EEG cache is
 # opened here: the REVE features were extracted from the version-2 cache
@@ -108,40 +104,10 @@ def load_text_embeddings(text_model: str, df: pd.DataFrame) -> Dict[str, np.ndar
     return text_embeddings
 
 
-def load_reve_features(
-    npz_path: Path = REVE_FEATURES_PATH,
-) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
-    """Load REVE per-window features and reconstruct padding masks.
-
-    Returns:
-        Dict mapping pid string to (windows, padding_mask) where:
-            windows: float32 (max_windows, 512)
-            padding_mask: bool (max_windows,) True = padded
-    """
-    if not npz_path.exists():
-        raise FileNotFoundError(
-            f"REVE features not found at {npz_path}. Run "
-            "thesisStandalone/analysis/reve_extract_features.py first."
-        )
-    logger.info(f"Loading REVE features from {npz_path}")
-    data = np.load(npz_path)
-    features = data["features"]               # (n_patients, max_windows, 512)
-    pids = data["pids"]                       # (n_patients,)
-    valid_counts = data["valid_window_counts"]  # (n_patients,)
-    n_patients, max_windows, embed_dim = features.shape
-    assert max_windows == MAX_WINDOWS, (
-        f"REVE max_windows {max_windows} != config MAX_WINDOWS {MAX_WINDOWS}"
-    )
-    out: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
-    for i in range(n_patients):
-        pid = str(pids[i])
-        windows = features[i].astype(np.float32)
-        valid_n = int(valid_counts[i])
-        padding_mask = np.zeros(max_windows, dtype=bool)
-        padding_mask[valid_n:] = True
-        out[pid] = (windows, padding_mask)
-    logger.info(f"Loaded REVE features for {len(out)} patients (embed_dim={embed_dim})")
-    return out
+def load_window_features(feature_set: str = DEFAULT_FEATURE_SET) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
+    """Per-window features and padding masks for every cached recording
+    (``shared.eeg_features.load_features`` on the Melbourne cohort)."""
+    return load_features(feature_set, "alfred")
 
 
 # ============================================================================
@@ -176,6 +142,11 @@ class ReveQuadDataset(Dataset):
         self.text_embeddings = torch.from_numpy(text_embeddings).float()
         self.reve_windows = reve_windows
         self.padding_masks = padding_masks
+        # width of the stored per-window features (512 REVE-base, 200 LaBraM-base)
+        widths = {int(w.shape[-1]) for w in reve_windows}
+        if len(widths) != 1:
+            raise ValueError(f"per-window feature widths differ across patients: {sorted(widths)}")
+        self.feature_dim = widths.pop()
         self.smiles_embeddings = smiles_embeddings
         self.smiles_indices = smiles_indices
         self.asm_drugs = asm_drugs
@@ -213,6 +184,7 @@ class ReveQuadDataset(Dataset):
 def prepare_quad_modality_data_reve(
     text_model: str = "clinicalbert",
     smiles_model: str = "chemberta",
+    feature_set: str = DEFAULT_FEATURE_SET,
 ) -> Tuple[
     pd.DataFrame,
     np.ndarray,
@@ -220,12 +192,12 @@ def prepare_quad_modality_data_reve(
     Dict[str, np.ndarray],
     Dict[str, Tuple[np.ndarray, np.ndarray]],
 ]:
-    """Build the quad-modal cohort with REVE features.
+    """Build the quad-modal cohort with stored EEG features (``feature_set``).
 
     Returns:
         (df, smiles_embeddings, smiles_indices, text_embeddings, reve_data)
     """
-    logger.info(f"Preparing exp15 quad-modal data (REVE + {text_model} + {smiles_model})")
+    logger.info(f"Preparing exp15 quad-modal data ({feature_set} + {text_model} + {smiles_model})")
 
     # Load full clinical CSV (no outcome filter yet)
     df = pd.read_csv(CSV_PATH)
@@ -245,7 +217,7 @@ def prepare_quad_modality_data_reve(
     logger.info(f"Patients with valid text embeddings: {len(text_embeddings)}")
 
     # Load REVE features
-    reve_data = load_reve_features()
+    reve_data = load_window_features(feature_set)
 
     # Intersect clinical + text + REVE (SMILES attaches to every patient via
     # smiles_vector), then dedupe by pid before the fold split.

@@ -69,7 +69,8 @@ class EEGSMILESDataset(Dataset):
 
         Returns:
             Tuple of:
-            - eeg_windows: (num_windows, max_channels, n_times)
+            - eeg_windows: (num_windows, max_channels, n_times), or (num_windows, dim)
+              when eeg_data holds stored per-window features
             - padding_mask: (num_windows,) boolean, True for padded
             - smiles_embedding: (embed_dim,)
             - label: scalar
@@ -78,13 +79,14 @@ class EEGSMILESDataset(Dataset):
 
         # Get EEG data
         windows, padding_mask = self.eeg_data[pid]
-        n_windows, n_channels, n_times = windows.shape
-
-        # Pad channels if needed
-        if n_channels < self.max_channels:
-            padded = np.zeros((n_windows, self.max_channels, n_times), dtype=np.float32)
-            padded[:, :n_channels, :] = windows
-            windows = padded
+        if windows.ndim == 3:
+            n_windows, n_channels, n_times = windows.shape
+            # Pad channels if needed
+            if n_channels < self.max_channels:
+                padded = np.zeros((n_windows, self.max_channels, n_times), dtype=np.float32)
+                padded[:, :n_channels, :] = windows
+                windows = padded
+        # stored per-window features (num_windows, dim) pass through unchanged
 
         eeg_windows = torch.from_numpy(windows).float()
         padding_mask = torch.from_numpy(padding_mask).bool()

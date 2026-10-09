@@ -21,7 +21,7 @@ from shared.epoch_selection import run_outer_fold
 from shared.cv_splits import apply_cv_args  # noqa: E402
 from shared.prediction_logger import protocol_metadata, run_provenance
 
-from .config import ASM_NAME_MAPPING, CV_CONFIG, RESULTS_DIR
+from .config import ASM_NAME_MAPPING, CV_CONFIG, DEFAULT_FEATURE_SET, FEATURE_SETS, RESULTS_DIR
 from .data_pipeline import (
     create_reve_quad_datasets,
     prepare_quad_modality_data_reve,
@@ -105,6 +105,7 @@ def run_exp15_with_predictions(
     output_suffix: str = "",
     splitter: str = "legacy",
     inner_val: float = 0.0,
+    feature_set: str = DEFAULT_FEATURE_SET,
 ) -> Dict[str, Path]:
     """Run exp15 with per-patient and ASM-swap prediction logging.
 
@@ -120,7 +121,7 @@ def run_exp15_with_predictions(
     logger.info(f"Using device: {device}, seed: {seed}, asm_balance: {asm_balance_mode}")
 
     df, smiles_embeddings, smiles_indices, text_embeddings, reve_data = (
-        prepare_quad_modality_data_reve(text_model, smiles_model)
+        prepare_quad_modality_data_reve(text_model, smiles_model, feature_set)
     )
     outcomes = df["outcome"].values
     logger.info(f"  Cohort size: {len(df)} patients")
@@ -175,7 +176,8 @@ def run_exp15_with_predictions(
         )
 
     oof_payload = {
-        "experiment": "exp15" + (f"_{output_suffix}" if output_suffix else ""),
+        "experiment": f"exp15_{feature_set}" + (f"_{output_suffix}" if output_suffix else ""),
+        "feature_set": feature_set,
         "asm_balance_mode": asm_balance_mode,
         "seed": seed,
         "text_model": text_model,
@@ -192,9 +194,9 @@ def run_exp15_with_predictions(
             "provenance": run_provenance(),
         },
     }
-    # Protocol suffix after the balance suffix; empty for the legacy protocol.
+    # Feature set, then the balance suffix, then the protocol suffix (empty for legacy).
     suffix_part = (f"_{output_suffix}" if output_suffix else "") + cv_suffix(splitter, inner_val)
-    oof_path = output_dir / f"predictions_oof{suffix_part}.json"
+    oof_path = output_dir / f"predictions_oof_{feature_set}{suffix_part}.json"
     _save_predictions_json(oof_payload, oof_path)
 
     return {"oof": oof_path}
@@ -232,6 +234,10 @@ def main():
     parser.add_argument(
         "--device", type=str, default=None,
         help="Device override (default: auto-detect).",
+    )
+    parser.add_argument(
+        "--feature-set", type=str, choices=sorted(FEATURE_SETS), default=DEFAULT_FEATURE_SET,
+        help="Stored per-window EEG features to fuse (default reve_v2; labram_v2 = pretrained LaBraM-base).",
     )
     add_cv_args(parser)
     args = parser.parse_args()
@@ -272,11 +278,13 @@ def main():
             output_suffix=suffix,
             splitter=args.splitter,
             inner_val=args.inner_val,
+            feature_set=args.feature_set,
         )
     else:
         run_cross_validation(
             device=device, asm_balance_mode=args.asm_balance,
             splitter=args.splitter, inner_val=args.inner_val,
+            feature_set=args.feature_set,
         )
 
 

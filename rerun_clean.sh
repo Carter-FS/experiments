@@ -88,7 +88,8 @@ EXP19_TEXT_CONFIGS=(A B B-imp E E-imp D D-tok D-split)
 EXP19_TABULAR_CONFIGS=(T4 T5a T6a T4-full T5a-full)
 EXP18_TEXT_CONFIGS=(S19A_pubmedbert S19D_pubmedbert S19A_clinicalbert S19D_clinicalbert
                     S19A_llama31_8b S19D_llama31_8b LF_T5a-full LF_T6a)
-EXP9_ABLATIONS=(baseline_simplecnn_transformer encoder_eegnet encoder_labram encoder_eeg2vec encoder_frozen
+EXP9_ABLATIONS=(baseline_simplecnn_transformer encoder_eegnet encoder_labram_scratch encoder_eeg2vec
+                encoder_labram_pretrained_frozen encoder_reve_frozen encoder_frozen
                 aggregator_attention aggregator_maxpool aggregator_meanmax aggregator_lstm
                 aggregator_depth_0 aggregator_depth_1 aggregator_depth_4 embed_dim_64 embed_dim_128)
 TASKS=(
@@ -152,9 +153,11 @@ run_task () {
             "$PY" -m exp7_all_modalities.run_experiments --mode predictions --asm-balance stratified_batch \
                 --deterministic --output_dir "$OUT/exp7_predictions" "${CV[@]}" ;;
         exp15)
-            for mode in none weighted; do
-                "$PY" -m exp15_reve_quad_mlp.run_experiments --mode predictions --asm-balance "$mode" \
-                    --seed "$seed" --output-dir "$OUT/exp15_predictions" "${CV[@]}" || return 1
+            for fs in reve_v2 labram_v2; do
+                for mode in none weighted; do
+                    "$PY" -m exp15_reve_quad_mlp.run_experiments --mode predictions --asm-balance "$mode" \
+                        --feature-set "$fs" --seed "$seed" --output-dir "$OUT/exp15_predictions" "${CV[@]}" || return 1
+                done
             done ;;
         exp16) "$PY" -m exp16_reduced_capacity.run_experiments --mode predictions --seed "$seed" \
                    --output-dir "$OUT/exp16_predictions" "${CV[@]}" ;;
@@ -262,7 +265,12 @@ preflight () {
     check "EEG cache v2, HEP1 (HEP EEG, exp18; python -m shared.eeg_cache build --cohort hep)" \
         "'$PY' -m shared.eeg_cache stats $OUT/eeg_cache/eeg19_v2_hep.pkl > /dev/null"
     check "text + SMILES embeddings" "[[ -f $OUT/bert_alfred_1stregimen_eeg_embeddings.npy && -f $OUT/hep_clinicalbert_eeg_embeddings.npy && -f $OUT/chemberta_asm_embeddings.npy ]]"
-    check "REVE features v2 (exp15, reve; thesisStandalone/analysis/reve_extract_features.py)" "ls $OUT/reve_features_v2_alfred*.npz"
+    check "REVE features v2 (exp9 encoder_reve_frozen, exp15; thesisStandalone/analysis/reve_extract_features.py)" \
+        "'$PY' -m shared.eeg_features check --feature-set reve_v2 --cohort alfred > /dev/null"
+    check "LaBraM features v2 (exp9 encoder_labram_pretrained_frozen, exp15; python -m shared.labram_pretrained extract)" \
+        "'$PY' -m shared.eeg_features check --feature-set labram_v2 --cohort alfred > /dev/null"
+    check "pretrained LaBraM weights (exp9 labram_pretrained encoder; python -m shared.labram_pretrained export-weights)" \
+        "[[ -f $OUT/labram_base_19ch.pt ]]"
     check "legacy exp9 EEG2Vec OOF file (reve's 147-patient cohort)" \
         "[[ -f $OUT/exp9_predictions/predictions_oof_exp9_encoder_eeg2vec.json ]]"
     check "logs/ directory (slurm opens its log files before the job starts)" "mkdir -p logs"

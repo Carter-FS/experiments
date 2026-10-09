@@ -24,7 +24,9 @@ BASE_DIR = Path(__file__).parent.parent
 sys.path.insert(0, str(BASE_DIR))
 
 from exp2_fusion.config import EEG_CONFIG, MODEL_CONFIG, TRAIN_CONFIG, BATCH_SIZE_BY_ENCODER, CHUNK_SIZE_BY_ENCODER
-from exp2_fusion.data_pipeline import prepare_data, create_datasets, get_max_channels
+from exp2_fusion.data_pipeline import create_datasets, get_max_channels, load_smiles_embeddings
+from shared.eeg_cache import eeg_patient_frame, load_cache
+from shared.eeg_features import FEATURE_SETS, load_features
 from shared.cohort import add_stratification_columns
 from exp2_fusion.models.eeg_encoders import get_eeg_encoder, SimpleCNNEncoder
 from exp2_fusion.models.eeg_transformer import EEGWindowTransformer
@@ -34,7 +36,12 @@ from exp8_stratification.stratified_cv import get_multilabel_splits, get_outcome
 from shared.cv_splits import add_cv_args, cv_suffix, outer_splits, rethreshold
 from shared.epoch_selection import run_outer_fold
 from shared.cv_splits import apply_cv_args  # noqa: E402
-from .config import RESULTS_DIR, CV_CONFIG
+from .config import RESULTS_DIR, CV_CONFIG, EEG_CACHE_PATH
+
+# The EEG input an arm reads. Raw-EEG encoders read the version-2 cache under one
+# amplitude convention; "precomputed" arms read a stored feature set written from that
+# cache by a frozen pretrained encoder (shared.eeg_features).
+RAW_EEG_INPUT = {"kind": "cache", "convention": "zscore_window"}
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -60,6 +67,7 @@ class AblationModel(nn.Module):
         freeze_encoder: bool = False,
         max_windows: int = 120,
         window_chunk_size: int = 32,
+        encoder_kwargs: Optional[Dict] = None,
     ):
         """Initialise ablation model.
 
@@ -74,6 +82,7 @@ class AblationModel(nn.Module):
             num_layers: Number of transformer layers.
             smiles_dim: SMILES embedding dimension.
             freeze_encoder: Whether to freeze the window encoder.
+            encoder_kwargs: Extra keyword arguments for the encoder factory.
             max_windows: Maximum number of windows.
             window_chunk_size: Chunk size for window processing.
         """
@@ -88,6 +97,7 @@ class AblationModel(nn.Module):
             n_channels=n_channels,
             n_times=n_times,
             emb_size=embed_dim,
+            **(encoder_kwargs or {}),
         )
 
         if freeze_encoder:
@@ -173,6 +183,35 @@ class AblationModel(nn.Module):
         return logits
 
 
+def input_spec(ablation_config: Dict) -> Dict:
+    """The EEG input an arm reads, validated against its encoder type."""
+    spec = dict(ablation_config.get("input", RAW_EEG_INPUT))
+    precomputed = ablation_config.get("encoder_type", "simplecnn") == "precomputed"
+    if precomputed and spec.get("kind") != "features":
+        raise ValueError(f"{ablation_config['name']}: a precomputed encoder needs a feature-set input")
+    if not precomputed and spec.get("kind") != "cache":
+        raise ValueError(f"{ablation_config['name']}: a raw-EEG encoder needs a cache input")
+    if spec["kind"] == "features" and spec.get("feature_set") not in FEATURE_SETS:
+        raise ValueError(f"{ablation_config['name']}: unknown feature set {spec.get('feature_set')!r}")
+    if spec["kind"] == "cache" and spec.get("convention") not in ("zscore_window", "labram"):
+        raise ValueError(f"{ablation_config['name']}: unsupported cache convention {spec.get('convention')!r}")
+    return spec
+
+
+def input_key(spec: Dict) -> str:
+    return json.dumps(spec, sort_keys=True)
+
+
+def load_eeg_input(spec: Dict, cohort: str = "alfred"):
+    """EEG windows or stored features for every cached recording, plus the patient frame
+    (CSV rows with a usable outcome and a recording)."""
+    if spec["kind"] == "cache":
+        eeg_data = load_cache(EEG_CACHE_PATH, spec["convention"])
+    else:
+        eeg_data = load_features(spec["feature_set"], cohort)
+    return eeg_data, eeg_patient_frame(eeg_data.keys())
+
+
 def run_ablation_experiment(
     ablation_config: Dict,
     eeg_data: Dict,
@@ -207,6 +246,19 @@ def run_ablation_experiment(
     """
     logger.info(f"Running ablation: {ablation_config['name']}")
 
+    # Validate the arm's EEG input and widths before any work is done.
+    spec = input_spec(ablation_config)
+    encoder_type = ablation_config.get("encoder_type", "simplecnn")
+    embed_dim = ablation_config.get("embed_dim", 256)
+    if spec["kind"] == "features":
+        # a stored feature set fixes the window embedding width
+        feature_dim = FEATURE_SETS[spec["feature_set"]]["dim"]
+        if embed_dim != feature_dim:
+            raise ValueError(f"{ablation_config['name']}: embed_dim {embed_dim} but {spec['feature_set']} "
+                             f"features are {feature_dim}-dimensional")
+    batch_size = BATCH_SIZE_BY_ENCODER[encoder_type]
+    chunk_size = CHUNK_SIZE_BY_ENCODER[encoder_type]
+
     # Get splits (fall back to outcome-only if iterative-stratification unavailable)
     if splitter != "legacy":
         # The EEG cohort frame has no focal/sex columns, so join them on for
@@ -234,15 +286,11 @@ def run_ablation_experiment(
     else:
         splits = list(get_outcome_only_splits(df, n_splits=CV_CONFIG["n_splits"]))
 
-    n_channels = get_max_channels(eeg_data)
+    n_channels = get_max_channels(eeg_data) if spec["kind"] == "cache" else N_CHANNELS
     smiles_dim = smiles_embeddings.shape[1]
 
     fold_metrics = {"auc": [], "balanced_acc_tuned": [], "f1_tuned": []}
     outcomes = df["outcome"].values
-
-    encoder_type = ablation_config.get("encoder_type", "simplecnn")
-    batch_size = BATCH_SIZE_BY_ENCODER.get(encoder_type, 8)
-    chunk_size = CHUNK_SIZE_BY_ENCODER.get(encoder_type, 32)
 
     def fit_fold(train_ds, val_ds, test_dataset=None, trace=None, fixed_epochs=None, refit_choice=None):
         """Train one model; legacy / inner split / refit as in exp4's train_fold."""
@@ -255,7 +303,7 @@ def run_ablation_experiment(
             encoder_type=encoder_type,
             aggregator_type=ablation_config.get("aggregator_type", "transformer"),
             n_channels=n_channels,
-            embed_dim=ablation_config.get("embed_dim", 256),
+            embed_dim=embed_dim,
             output_dim=ablation_config.get("output_dim", 256),
             num_heads=ablation_config.get("num_heads", 4),
             num_layers=ablation_config.get("num_layers", 2),
@@ -263,6 +311,7 @@ def run_ablation_experiment(
             freeze_encoder=ablation_config.get("freeze_encoder", False),
             max_windows=ablation_config.get("max_windows", 120),
             window_chunk_size=chunk_size,
+            encoder_kwargs=ablation_config.get("encoder_kwargs"),
         ).to(device)
 
         # Training setup
@@ -398,11 +447,33 @@ def define_ablation_experiments() -> List[Dict]:
     })
 
     experiments.append({
-        "name": "encoder_labram",
+        "name": "encoder_labram_scratch",   # the LaBraM architecture trained from scratch
         "encoder_type": "labram",
         "aggregator_type": "transformer",
         "embed_dim": 128,  # LaBraM uses smaller embedding for memory
         "output_dim": 128,
+        "num_layers": 2,
+    })
+
+    # Pretrained encoders used frozen: their per-window features are computed once
+    # outside training (shared.eeg_features) and go through the same aggregator and
+    # head as the other encoders.
+    experiments.append({
+        "name": "encoder_labram_pretrained_frozen",
+        "encoder_type": "precomputed",
+        "input": {"kind": "features", "feature_set": "labram_v2"},
+        "aggregator_type": "transformer",
+        "embed_dim": FEATURE_SETS["labram_v2"]["dim"],
+        "output_dim": 256,
+        "num_layers": 2,
+    })
+    experiments.append({
+        "name": "encoder_reve_frozen",
+        "encoder_type": "precomputed",
+        "input": {"kind": "features", "feature_set": "reve_v2"},
+        "aggregator_type": "transformer",
+        "embed_dim": FEATURE_SETS["reve_v2"]["dim"],
+        "output_dim": 256,
         "num_layers": 2,
     })
 
@@ -494,18 +565,19 @@ def run_all_ablations(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
 
-    # Prepare data
-    logger.info("Preparing data...")
-    eeg_data, smiles_embeddings, smiles_indices, df = prepare_data(
-        smiles_model=smiles_model,
-    )
-    logger.info(f"Loaded {len(df)} patients")
-
     # Define experiments
     if experiments is None:
         experiments = define_ablation_experiments()
 
     logger.info(f"Running {len(experiments)} ablation experiments")
+
+    smiles_embeddings, smiles_indices = load_smiles_embeddings(smiles_model)
+    # Arms sharing an EEG input run on one loaded copy; every input must give the
+    # same cohort, since the feature files are written from the cache.
+    groups: Dict[str, List[Dict]] = {}
+    for exp_config in experiments:
+        groups.setdefault(input_key(input_spec(exp_config)), []).append(exp_config)
+    cohort_pids = None
 
     # Run experiments
     all_results = []
@@ -514,35 +586,47 @@ def run_all_ablations(
         from shared.prediction_logger import PredictionLogger
         pred_dir = predictions_dir if predictions_dir is not None else RESULTS_DIR.parent / "exp9_predictions"
 
-    for exp_config in experiments:
-        try:
-            pred_logger = None
-            if log_predictions:
-                suffix = cv_suffix(splitter, inner_val)
-                pred_logger = PredictionLogger(
-                    exp_id=f"exp9_{exp_config['name']}",
-                    output_dir=pred_dir,
-                    filename=f"predictions_oof_exp9_{exp_config['name']}{suffix}.json",
-                    metadata={"splitter": splitter, "inner_val": inner_val},
+    for key, group in groups.items():
+        spec = json.loads(key)
+        logger.info(f"Loading EEG input {spec} for {len(group)} arm(s)")
+        eeg_data, df = load_eeg_input(spec)
+        pids = df["pid"].astype(str).tolist()
+        if cohort_pids is None:
+            cohort_pids = pids
+            logger.info(f"Loaded {len(df)} patients")
+        elif pids != cohort_pids:
+            raise RuntimeError(f"EEG input {spec} gives a different cohort ({len(pids)} patients) "
+                               f"from the first input ({len(cohort_pids)})")
+        for exp_config in group:
+            try:
+                pred_logger = None
+                if log_predictions:
+                    suffix = cv_suffix(splitter, inner_val)
+                    pred_logger = PredictionLogger(
+                        exp_id=f"exp9_{exp_config['name']}",
+                        output_dir=pred_dir,
+                        filename=f"predictions_oof_exp9_{exp_config['name']}{suffix}.json",
+                        metadata={"splitter": splitter, "inner_val": inner_val, "eeg_input": spec},
+                    )
+                results = run_ablation_experiment(
+                    exp_config,
+                    eeg_data, smiles_embeddings, smiles_indices, df,
+                    device,
+                    use_multilabel_stratification=use_multilabel,
+                    prediction_logger=pred_logger,
+                    splitter=splitter,
+                    inner_val=inner_val,
                 )
-            results = run_ablation_experiment(
-                exp_config,
-                eeg_data, smiles_embeddings, smiles_indices, df,
-                device,
-                use_multilabel_stratification=use_multilabel,
-                prediction_logger=pred_logger,
-                splitter=splitter,
-                inner_val=inner_val,
-            )
-            if pred_logger is not None:
-                pred_logger.save()
-            all_results.append(results)
-        except Exception as e:
-            logger.error(f"Experiment {exp_config['name']} failed: {e}")
-            all_results.append({
-                "name": exp_config["name"],
-                "error": str(e),
-            })
+                if pred_logger is not None:
+                    pred_logger.save()
+                all_results.append(results)
+            except Exception as e:
+                logger.error(f"Experiment {exp_config['name']} failed: {e}")
+                all_results.append({
+                    "name": exp_config["name"],
+                    "error": str(e),
+                })
+        del eeg_data
 
     # Save results
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

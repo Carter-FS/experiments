@@ -20,7 +20,7 @@ from typing import Any, Dict, List
 import numpy as np
 import torch
 
-from .config import CV_CONFIG, MLP_CONFIG
+from .config import CV_CONFIG, DEFAULT_FEATURE_SET, MLP_CONFIG
 from .data_pipeline import (
     create_reve_quad_datasets,
     prepare_quad_modality_data_reve,
@@ -113,7 +113,7 @@ def train_fold(
         num_workers=0,
     )
 
-    model = _exp15_get_model(fusion="mlp", device=device)
+    model = _exp15_get_model(fusion="mlp", device=device, reve_dim=train_dataset.feature_dim)
     n_params = sum(p.numel() for p in model.parameters())
     logger.info(f"  Model parameters: {n_params:,}")
 
@@ -191,6 +191,7 @@ def run_cross_validation(
     asm_balance_mode: str = "none",
     splitter: str = "legacy",
     inner_val: float = 0.0,
+    feature_set: str = DEFAULT_FEATURE_SET,
 ) -> Dict[str, List[float]]:
     """Run 5-fold CV for exp15 quad-modal REVE.
 
@@ -200,10 +201,10 @@ def run_cross_validation(
     """
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info(f"Running exp15 CV (REVE, {text_model}, {smiles_model})")
+    logger.info(f"Running exp15 CV ({feature_set}, {text_model}, {smiles_model})")
 
     df, smiles_embeddings, smiles_indices, text_embeddings, reve_data = (
-        prepare_quad_modality_data_reve(text_model, smiles_model)
+        prepare_quad_modality_data_reve(text_model, smiles_model, feature_set)
     )
     outcomes = df["outcome"].values
 
@@ -289,7 +290,7 @@ def train_fold_with_predictions(
         num_workers=0,
     )
 
-    model = _exp15_get_model(fusion="mlp", device=device)
+    model = _exp15_get_model(fusion="mlp", device=device, reve_dim=train_dataset.feature_dim)
     n_params = sum(p.numel() for p in model.parameters())
     logger.info(f"  Model parameters: {n_params:,}")
 
