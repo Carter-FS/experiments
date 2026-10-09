@@ -90,3 +90,21 @@ def test_the_two_smoke_file_predicates_agree():
     for name in ("predictions_oof_x_sp-multilabel_rf5_s42.json", "predictions_oof_x_sp-multilabel_rf5_s42_smoke.json",
                  "hep_external_summary_sp-multilabel_rf5_s42_smoke.csv", "ablation_results_20261009_1_smoke.json", "smokeless.csv"):
         assert v.is_smoke_file(Path(name)) == ap.is_smoke_file(Path(name)) == ("_smoke" in Path(name).stem)
+
+
+def test_verify_gate_requires_version2_provenance_on_eeg_files():
+    from shared import verify_oof as v
+    with_cache = {"metadata": {"eeg_inputs": [{"kind": "cache", "version": 2}]}}
+    with_features = {"metadata": {"eeg_inputs": [{"kind": "features", "source_cache_version": 2}]}}
+    legacy = {"metadata": {"eeg_inputs": [{"kind": "cache", "version": "legacy"}]}}
+    none = {"metadata": {"protocol": "refit"}}
+    eeg = "exp9_predictions/predictions_oof_exp9_encoder_eegnet_sp-multilabel_rf5_s42.json"
+    assert v.eeg_provenance_problem(eeg, with_cache) is None and v.eeg_provenance_problem(eeg, with_features) is None
+    assert "superseded" in v.eeg_provenance_problem(eeg, none)
+    assert "no version-2" in v.eeg_provenance_problem(eeg, legacy)
+    assert v.eeg_provenance_problem("exp5_predictions/predictions_oof_exp5c_eeg2vec_sp-multilabel_rf5_s42.json", none)
+    assert v.eeg_provenance_problem("exp6_predictions/predictions_oof_exp6b_simplecnn_sp-multilabel_rf5_s42.json", none)
+    for non_eeg in ("exp4_predictions/predictions_oof_exp4a_mlp_s42.json", "exp5_predictions/predictions_oof_exp5a_chemberta_s42.json",
+                    "exp6_predictions/predictions_oof_exp6a_clinicalbert_chemberta_s42.json", "exp1_predictions/predictions_oof_exp1a_x.json",
+                    "exp19_predictions/predictions_oof_exp19_A_x.json"):
+        assert v.eeg_provenance_problem(non_eeg, none) is None, non_eeg

@@ -273,10 +273,13 @@ preflight () {
     check "EEG cache v2, HEP1 (HEP EEG, exp18; python -m shared.eeg_cache build --cohort hep)" \
         "'$PY' -m shared.eeg_cache stats $OUT/eeg_cache/eeg19_v2_hep.pkl > /dev/null"
     check "text + SMILES embeddings" "[[ -f $OUT/bert_alfred_1stregimen_eeg_embeddings.npy && -f $OUT/hep_clinicalbert_eeg_embeddings.npy && -f $OUT/chemberta_asm_embeddings.npy ]]"
-    check "REVE features v2 (exp9 encoder_reve_frozen, exp15; thesisStandalone/analysis/reve_extract_features.py)" \
+    check "REVE features v2, Melbourne (exp9 encoder_reve_frozen, exp15; thesisStandalone/analysis/reve_extract_features.py)" \
         "'$PY' -m shared.eeg_features check --feature-set reve_v2 --cohort alfred > /dev/null"
-    check "LaBraM features v2 (exp9 encoder_labram_pretrained_frozen, exp15; python -m shared.labram_pretrained extract)" \
+    check "LaBraM features v2, Melbourne (exp9 encoder_labram_pretrained_frozen, exp15; python -m shared.labram_pretrained extract)" \
         "'$PY' -m shared.eeg_features check --feature-set labram_v2 --cohort alfred > /dev/null"
+    check "REVE and LaBraM features v2, HEP1 (written from the HEP1 cache; same producers)" \
+        "'$PY' -m shared.eeg_features check --feature-set reve_v2 labram_v2 --cohort hep > /dev/null"
+    check "no EEG done marker predates the version-2 cache (run archive-eeg first)" "[[ -z \"\$(stale_eeg_markers)\" ]]"
     check "logs/ directory (slurm opens its log files before the job starts)" "mkdir -p logs"
     if [[ -f "$EXP18_DUPLICATES" ]]; then
         echo "note    exp18 will exclude $(grep -c . "$EXP18_DUPLICATES") confirmed duplicate HEP1 pid(s)"
@@ -491,6 +494,20 @@ archive_eeg () {
     else mkdir -p "$dest" && date -Is > "$dest/.complete" && echo "moved $n file(s) to $dest"; fi
 }
 
+# Done markers of EEG tasks older than the version-2 Melbourne cache sidecar: results
+# of the superseded cache that archive-eeg has not set aside (one per line).
+stale_eeg_markers () {
+    local guard="$OUT/eeg_cache/eeg19_v2_alfred.pkl.meta.json" p f t
+    [[ -f "$guard" ]] || { echo "$guard missing"; return; }
+    for p in refit innersplit; do
+        for f in "$OUT/_clean_rerun_v2/$p"/*.done; do
+            [[ -f "$f" && "$f" -ot "$guard" ]] || continue
+            t="${f##*/}"; t="${t%_s[0-9]*.done}"
+            grep -qE "$EEG_TASK_RE" <<< "$t" && echo "$f"
+        done
+    done
+}
+
 # slurm --array index list of the items with no done marker (deferred items excluded):
 # `pending-array` indexes `list` (rerun_clean.slurm), `pending-array-cpu` indexes
 # `list-cpu` (rerun_clean_cpu.slurm).
@@ -528,6 +545,7 @@ case "${1:-}" in
     archive-iv20) archive_iv20 ;;
     archive-eeg) archive_eeg ;;
     pending-array) pending_array items ;;
+    stale-markers) stale_eeg_markers ;;
     pending-array-cpu) pending_array items_cpu ;;
     smoke)
         # An end-to-end dry run of one task on this host's data: first outer fold,
@@ -563,7 +581,7 @@ case "${1:-}" in
         echo "== smoke $task (every output under $SMOKE_OUT) =="
         run_task "$task" 42; rc=$?
         exit $rc ;;
-    "") echo "usage: [PROTOCOL=refit|innersplit] bash rerun_clean.sh {preflight|list|list-cpu|verify|archive-iv20|archive-eeg|pending-array|pending-array-cpu|smoke <task>|<task>:<seed>}" >&2; exit 2 ;;
+    "") echo "usage: [PROTOCOL=refit|innersplit] bash rerun_clean.sh {preflight|list|list-cpu|verify|archive-iv20|archive-eeg|stale-markers|pending-array|pending-array-cpu|smoke <task>|<task>:<seed>}" >&2; exit 2 ;;
     *:*)
         task="${1%%:*}"; seed="${1##*:}"
         marker="$DONE/${task}_s${seed}.done"

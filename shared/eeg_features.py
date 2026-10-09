@@ -11,7 +11,7 @@ shape ``(MAX_WINDOWS, dim)`` instead of ``(MAX_WINDOWS, channels, samples)``.
     python -m shared.eeg_features check --feature-set reve_v2 labram_v2 --cohort alfred
 
 compares a feature file with its cohort's cache: the same patients, the same valid
-window counts.
+window counts, and the cache's build time and commit named in the file's metadata.
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from typing import Dict, Optional, Sequence, Tuple
 import numpy as np
 
 from exp2_fusion.config import MAX_WINDOWS
-from shared.eeg_cache import CACHE_PATHS, load_cache
+from shared.eeg_cache import CACHE_PATHS, cache_info, load_cache, register_input
 from shared.paths import EXPERIMENTS_ROOT
 
 logger = logging.getLogger(__name__)
@@ -95,6 +95,13 @@ def load_features(feature_set: str, cohort: str = "alfred",
         mask = np.arange(MAX_WINDOWS) >= counts[i]
         windows[mask] = 0.0
         out[pid] = (windows, mask)
+    meta = feature_meta(feature_set, cohort, path)
+    source = meta.get("source_cache_meta", {})
+    register_input({"kind": "features", "feature_set": feature_set, "file": path.name, "path": str(path.resolve()),
+                    "source_cache": meta.get("source_cache"), "source_cache_version": source.get("version"),
+                    "source_cache_built_at": source.get("built_at"),
+                    "experiments_commit": source.get("experiments_commit"), "built_at": meta.get("built_at"),
+                    "n_recordings": len(out)})
     logger.info("Loaded %s features for %d recordings from %s (dim %d)", feature_set, len(out), path.name, spec["dim"])
     return out
 
@@ -110,10 +117,20 @@ def feature_meta(feature_set: str, cohort: str = "alfred", path: Optional[Path] 
 
 
 def check_features_against_cache(features: Dict[str, Tuple[np.ndarray, np.ndarray]],
-                                 cache_path: Path) -> dict:
+                                 cache_path: Path, meta: Optional[dict] = None) -> dict:
     """Require the feature file and the cache to hold the same patients with the same
-    valid window counts; returns the counts compared. Loads the cache, so this is for
-    preflight and tests rather than every run."""
+    valid window counts and, when ``meta`` (the file's producer metadata) is given,
+    that it names this cache by build time and commit; returns the counts compared.
+    Loads the cache, so this is for preflight and tests rather than every run."""
+    if meta is not None:
+        source = meta.get("source_cache_meta") or {}
+        info = cache_info(cache_path)
+        if not source:
+            raise ValueError("feature file has no source_cache_meta; produce it from the version-2 cache again")
+        for key in ("built_at", "experiments_commit", "version"):
+            if source.get(key) != info.get(key):
+                raise ValueError(f"feature file was made from a cache with {key}={source.get(key)!r}; "
+                                 f"{Path(cache_path).name} has {info.get(key)!r}")
     cache = load_cache(cache_path, "raw_uv")
     missing = sorted(set(cache) - set(features))
     extra = sorted(set(features) - set(cache))
@@ -135,7 +152,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     for name in args.feature_set:
-        result = check_features_against_cache(load_features(name, args.cohort), CACHE_PATHS[args.cohort])
+        result = check_features_against_cache(load_features(name, args.cohort), CACHE_PATHS[args.cohort],
+                                              meta=feature_meta(name, args.cohort))
         print(json.dumps({"feature_set": name, "cohort": args.cohort, **result}))
     return 0
 

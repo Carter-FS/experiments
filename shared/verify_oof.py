@@ -51,6 +51,23 @@ EXPECTED_COUNTS = [
 
 N_FOLDS = 5
 
+# Files that depend on the EEG cache must carry version-2 provenance in their metadata
+# (``eeg_inputs`` from shared.prediction_logger.protocol_metadata); a file from a run
+# on the superseded cache has none (Addendum C).
+EEG_FILE_RE = re.compile(r"^(exp(2|3|7|9|11|15|16|17)_predictions/|exp5_predictions/predictions_oof_exp5c_|exp6_predictions/predictions_oof_exp6b_)")
+
+
+def eeg_provenance_problem(rel: str, payload: dict) -> str | None:
+    """Why an EEG-dependent file lacks version-2 provenance, or ``None``."""
+    if not EEG_FILE_RE.search(rel):
+        return None
+    inputs = (payload.get("metadata") or {}).get("eeg_inputs")
+    if not inputs:
+        return "no eeg_inputs provenance in metadata (an output of the superseded EEG cache?)"
+    ok = any(e.get("version") == 2 for e in inputs if e.get("kind") == "cache") or \
+        any(e.get("source_cache_version") == 2 for e in inputs if e.get("kind") == "features")
+    return None if ok else "eeg_inputs name no version-2 cache or feature file"
+
 
 def load_json_nul_tolerant(path: Path) -> dict:
     raw = path.read_bytes().replace(b"\x00", b"").strip()
@@ -81,6 +98,9 @@ def verify_file(path: Path) -> list[str]:
         return ["no folds / pids"]
     if len(folds) != N_FOLDS:
         problems.append(f"{len(folds)} folds != expected {N_FOLDS}")
+    provenance = eeg_provenance_problem(f"{path.parent.name}/{path.name}", payload)
+    if provenance:
+        problems.append(provenance)
     try:
         assert_oof_no_leakage(folds)
     except AssertionError as exc:

@@ -15,7 +15,7 @@ from shared import eeg_cache as C
 from shared import eeg_features as F
 
 
-def _write_features(path, pids, counts, dim, seed=0, max_windows=MAX_WINDOWS, finite=True):
+def _write_features(path, pids, counts, dim, seed=0, max_windows=MAX_WINDOWS, finite=True, meta=None):
     rng = np.random.default_rng(seed)
     feats = np.zeros((len(pids), max_windows, dim), dtype=np.float32)
     for i, n in enumerate(counts):
@@ -23,8 +23,16 @@ def _write_features(path, pids, counts, dim, seed=0, max_windows=MAX_WINDOWS, fi
     if not finite:
         feats[0, 0, 0] = np.nan
     np.savez_compressed(path, features=feats, pids=np.array(pids), valid_window_counts=np.array(counts, dtype=np.int32),
-                        meta=json.dumps({"made_by": "test"}))
+                        meta=json.dumps(meta if meta is not None else {"made_by": "test"}))
     return path
+
+
+def _provenance(cache_path):
+    """Producer metadata naming ``cache_path`` as LaBraM and REVE extractors write it."""
+    info = C.cache_info(cache_path)
+    return {"source_cache": cache_path.name,
+            "source_cache_meta": {k: info[k] for k in ("version", "cohort", "n_recordings", "built_at", "experiments_commit") if k in info},
+            "made_by": "test"}
 
 
 def _write_cache(path, pids, counts):
@@ -101,12 +109,36 @@ def test_check_against_cache_requires_the_same_patients_and_masks(tmp_path):
         F.check_features_against_cache(shifted, cache)
 
 
-def test_check_cli(tmp_path, monkeypatch):
+def test_check_cli_requires_matching_provenance(tmp_path, monkeypatch):
     cache = _write_cache(tmp_path / "eeg19_v2_alfred.pkl", ["a"], [7])
-    _write_features(tmp_path / "labram_features_v2_alfred.npz", ["a"], [7], 200)
     monkeypatch.setattr(F, "OUT_DIR", tmp_path)
     monkeypatch.setitem(F.CACHE_PATHS, "alfred", cache)
+    path = tmp_path / "labram_features_v2_alfred.npz"
+    _write_features(path, ["a"], [7], 200)                       # no source_cache_meta
+    with pytest.raises(ValueError, match="no source_cache_meta"):
+        F.main(["check", "--feature-set", "labram_v2", "--cohort", "alfred"])
+    stale = _provenance(cache)
+    stale["source_cache_meta"]["built_at"] = "2026-01-01T00:00:00"
+    _write_features(path, ["a"], [7], 200, meta=stale)             # names another build of the cache
+    with pytest.raises(ValueError, match="built_at"):
+        F.main(["check", "--feature-set", "labram_v2", "--cohort", "alfred"])
+    _write_features(path, ["a"], [7], 200, meta=_provenance(cache))
     assert F.main(["check", "--feature-set", "labram_v2", "--cohort", "alfred"]) == 0
+
+
+def test_loaders_register_their_inputs_for_the_prediction_metadata(tmp_path):
+    from shared.prediction_logger import protocol_metadata
+    cache = _write_cache(tmp_path / "eeg19_v2_alfred.pkl", ["a"], [7])
+    feats = _write_features(tmp_path / "labram_features_v2_alfred.npz", ["a"], [7], 200, meta=_provenance(cache))
+    before = len(C.LOADED_INPUTS)
+    C.load_cache(cache, "zscore_window")
+    F.load_features("labram_v2", path=feats)
+    entries = C.LOADED_INPUTS[before:]
+    assert [e["kind"] for e in entries] == ["cache", "features"]
+    assert entries[0]["version"] == C.CACHE_VERSION and entries[0]["convention"] == "zscore_window"
+    assert entries[1]["source_cache_version"] == C.CACHE_VERSION and entries[1]["feature_set"] == "labram_v2"
+    assert entries[1]["source_cache_built_at"] == C.cache_info(cache)["built_at"]
+    assert protocol_metadata(0.0)["eeg_inputs"][-2:] == entries
 
 
 def test_exp2_dataset_passes_feature_windows_through(tmp_path):

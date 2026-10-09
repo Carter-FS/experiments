@@ -124,12 +124,15 @@ def test_smoke_mode_limits_folds_epochs_and_tags_outputs():
         got = cv.outer_splits(df, mode="legacy", seed=42)
         assert len(got) == 1 and np.array_equal(got[0][1], full[0][1])   # the first fold, unchanged
         assert cv.cv_suffix("multilabel", 0.0) == "_sp-multilabel_rf5_s42_smoke"
-        assert protocol_metadata(0.0) == {"protocol": "refit", "refit_folds": 2, "smoke": True}
+        meta = protocol_metadata(0.0)
+        assert {k: meta[k] for k in ("protocol", "refit_folds", "smoke")} == {"protocol": "refit", "refit_folds": 2, "smoke": True}
+        assert isinstance(meta["eeg_inputs"], list)
     finally:
         cv.apply_cv_args(parser.parse_args([]))
     assert not cv.smoke() and cv.refit_folds() == 0 and cv.max_epochs(100) == 100
     assert len(cv.outer_splits(df, mode="legacy", seed=42)) == 5 and cv.cv_suffix("legacy", 0.0) == ""
-    assert protocol_metadata(0.2) == {"protocol": "innersplit", "refit_folds": 0, "smoke": False}
+    meta = protocol_metadata(0.2)
+    assert {k: meta[k] for k in ("protocol", "refit_folds", "smoke")} == {"protocol": "innersplit", "refit_folds": 0, "smoke": False}
 
 
 # Every module with a training loop that rerun_clean.sh runs (the HEP scripts train

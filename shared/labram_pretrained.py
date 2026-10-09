@@ -197,7 +197,7 @@ def _source_cache_provenance(cache_path: Path) -> dict:
     """Version, cohort, counts and build time of the cache the features come from."""
     info = cache_info(cache_path)
     keep = ("version", "cohort", "n_recordings", "n_channels", "ch_names", "sfreq", "built_at",
-            "n_edf_files", "n_skipped", "skipped")
+            "experiments_commit", "n_edf_files", "n_skipped", "skipped")
     return {k: info[k] for k in keep if k in info}
 
 

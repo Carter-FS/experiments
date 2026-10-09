@@ -462,6 +462,7 @@ def write_cache(path: Path, meta: dict, recordings: Dict[str, dict]) -> dict:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     meta = {**meta, **_shape_fields(recordings), "n_recordings": len(recordings)}
+    meta.setdefault("built_at", _dt.datetime.now().isoformat(timespec="seconds"))
     payload = {"meta": meta, "recordings": recordings}
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".partial")
     try:
@@ -542,6 +543,19 @@ def _read_payload(path: Path, allow_legacy: bool) -> dict:
     )
 
 
+# Provenance of every EEG input loaded in this process (caches here, stored feature
+# files through shared.eeg_features), written into each prediction file's metadata by
+# shared.prediction_logger.protocol_metadata so the verify gate can tell which cache a
+# result came from.
+LOADED_INPUTS: list = []
+
+
+def register_input(entry: dict) -> None:
+    """Record an EEG input (a cache or a feature file) loaded in this process."""
+    if entry not in LOADED_INPUTS:
+        LOADED_INPUTS.append(dict(entry))
+
+
 def load_cache(path: Path, convention: str, allow_legacy: bool = False) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
     """``{pid: (windows, padding_mask)}`` with ``convention`` applied to the valid windows.
 
@@ -557,7 +571,11 @@ def load_cache(path: Path, convention: str, allow_legacy: bool = False) -> Dict[
     if allow_legacy and convention != "raw_uv":
         raise ValueError("a legacy cache can only be loaded with convention='raw_uv' (its values are not microvolts)")
     payload = _read_payload(Path(path), allow_legacy)
-    if payload["meta"].get("version") == "legacy":
+    meta = payload["meta"]
+    register_input({"kind": "cache", "file": Path(path).name, "path": str(Path(path).resolve()), "convention": convention,
+                    "version": meta.get("version"), "built_at": meta.get("built_at"),
+                    "experiments_commit": meta.get("experiments_commit"), "n_recordings": len(payload["recordings"])})
+    if meta.get("version") == "legacy":
         return {pid: (np.asarray(w, dtype=np.float32), np.asarray(m, dtype=bool))
                 for pid, (w, m) in payload["recordings"].items()}
     out: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}

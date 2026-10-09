@@ -195,3 +195,12 @@ def test_archive_eeg_checks_destinations_before_moving(tmp_path):
     assert not any(p.name.endswith(".partial") for p in dest.rglob("*"))
     (thesis / ".gitkeep").touch()
     assert ".gitkeep" not in run(["archive-eeg"], DRY_RUN=1, OUT=out, ASM_ANALYSIS_OUTPUT_DIR=thesis).stdout
+
+
+def test_stale_markers_lists_eeg_markers_older_than_the_cache(tmp_path):
+    out, thesis, eeg, keep, guard = _eeg_tree(tmp_path)
+    listed = run(["stale-markers"], OUT=out).stdout.split()
+    names = sorted(Path(f).name for f in listed)
+    assert names == ["exp5_s42.done", "exp9_encoder_eeg2vec_s42.done", "hep_eeg_s42.done"]   # not exp4
+    run(["archive-eeg"], OUT=out, ASM_ANALYSIS_OUTPUT_DIR=thesis)
+    assert run(["stale-markers"], OUT=out).stdout.strip() == ""

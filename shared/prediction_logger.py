@@ -85,8 +85,10 @@ def protocol_metadata(inner_val: float) -> dict:
     """Selection protocol of the active run ('legacy' / 'innersplit' / 'refit'),
     so consumers need not infer it from the filename."""
     from shared.cv_splits import protocol_name, refit_folds, smoke
+    from shared.eeg_cache import LOADED_INPUTS
 
-    return {"protocol": protocol_name(inner_val), "refit_folds": refit_folds(), "smoke": smoke()}
+    return {"protocol": protocol_name(inner_val), "refit_folds": refit_folds(), "smoke": smoke(),
+            "eeg_inputs": [dict(e) for e in LOADED_INPUTS]}
 
 
 class PredictionLogger:
