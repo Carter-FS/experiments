@@ -10,7 +10,7 @@ import torch.nn as nn
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score, roc_auc_score, roc_curve
 from torch.utils.data import DataLoader
 
-from shared.cv_splits import outer_splits, rethreshold, current_seed
+from shared.cv_splits import outer_splits, rethreshold, current_seed, max_epochs
 from shared.epoch_selection import run_outer_fold
 
 from .config import CV_CONFIG, TRAINING_CONFIG
@@ -349,7 +349,7 @@ def train_fold(
     best_state = None
     patience_counter = 0
 
-    for epoch in range(config["epochs"] if fixed_epochs is None else fixed_epochs):
+    for epoch in range(max_epochs(config["epochs"]) if fixed_epochs is None else fixed_epochs):
         train_loss = train_fn(
             model, train_loader, optimizer, criterion, device,
             asm_weighted=asm_weighted, class_weights=class_weights,

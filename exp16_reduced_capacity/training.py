@@ -21,7 +21,7 @@ from .config import MLP_CONFIG
 from .models import get_model
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from shared.cv_splits import current_seed  # noqa: E402
+from shared.cv_splits import current_seed, max_epochs  # noqa: E402
 from exp7_all_modalities.training import (  # noqa: E402
     _DropPidWrapper,
     _predict_with_smiles_override,
@@ -113,7 +113,7 @@ def train_fold_with_predictions(
     best_state_dict = None
     patience_counter = 0
 
-    for epoch in range(config["epochs"] if fixed_epochs is None else fixed_epochs):
+    for epoch in range(max_epochs(config["epochs"]) if fixed_epochs is None else fixed_epochs):
         train_epoch_mlp(
             model, train_loader, optimizer, criterion, device,
             asm_weighted=asm_weighted, class_weights=class_weights,

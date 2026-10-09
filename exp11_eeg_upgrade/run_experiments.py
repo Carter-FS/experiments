@@ -52,7 +52,7 @@ from exp7_all_modalities.training import train_epoch_mlp as train_epoch_exp7, ev
 from shared.cohort import add_stratification_columns
 from shared.asm_balancing import WeightedASMDataset, compute_asm_sample_weights
 from shared.epoch_selection import run_outer_fold
-from shared.cv_splits import add_cv_args, cv_suffix, outer_splits, rethreshold
+from shared.cv_splits import add_cv_args, cv_suffix, outer_splits, rethreshold, max_epochs, smoke_tag
 from shared.cv_splits import apply_cv_args  # noqa: E402
 
 
@@ -121,7 +121,7 @@ def _train_fold_generic(model, train_loader, val_loader, config, device, train_f
     best_state = None
     patience_counter = 0
 
-    for epoch in range(config["epochs"] if fixed_epochs is None else fixed_epochs):
+    for epoch in range(max_epochs(config["epochs"]) if fixed_epochs is None else fixed_epochs):
         train_loss = train_fn(model, train_loader, optimizer, criterion, device,
                               asm_weighted=asm_weighted, class_weights=class_weights)
         if fixed_epochs is not None:
@@ -505,7 +505,7 @@ def main():
     # Save results
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_path = args.output or str(RESULTS_DIR / f"results_{timestamp}.json")
+    output_path = smoke_tag(Path(args.output) if args.output else RESULTS_DIR / f"results_{timestamp}.json")
     with open(output_path, "w") as f:
         json.dump(all_results, f, indent=2)
     logger.info(f"\nResults saved to {output_path}")

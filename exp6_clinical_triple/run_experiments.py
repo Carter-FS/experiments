@@ -16,7 +16,7 @@ from typing import Dict, List, Optional
 import numpy as np
 import torch
 
-from shared.cv_splits import add_cv_args, cv_suffix
+from shared.cv_splits import add_cv_args, cv_suffix, smoke_tag
 from shared.cv_splits import apply_cv_args  # noqa: E402
 
 from .config import EXPERIMENTS, RESULTS_DIR
@@ -321,10 +321,10 @@ def main():
 
     # Save results
     if args.output:
-        output_path = Path(args.output)
+        output_path = smoke_tag(Path(args.output))
     else:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_path = RESULTS_DIR / f"results_{timestamp}.json"
+        output_path = smoke_tag(RESULTS_DIR / f"results_{timestamp}.json")
 
     save_results(all_results, output_path)
 

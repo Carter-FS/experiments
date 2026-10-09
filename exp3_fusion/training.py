@@ -19,7 +19,7 @@ from .data_pipeline import (
 )
 from .models import TripleModalityMLP, TripleModalityFuseMoE
 from shared.cohort import add_stratification_columns
-from shared.cv_splits import outer_splits, rethreshold, current_seed
+from shared.cv_splits import outer_splits, rethreshold, current_seed, max_epochs
 from shared.epoch_selection import run_outer_fold
 
 logger = logging.getLogger("exp3")
@@ -336,7 +336,7 @@ def train_fold(
     patience_counter = 0
     global_step = 0
 
-    for epoch in range(config["epochs"] if fixed_epochs is None else fixed_epochs):
+    for epoch in range(max_epochs(config["epochs"]) if fixed_epochs is None else fixed_epochs):
         train_loss, global_step = train_epoch(
             model, train_loader, optimizer, criterion, device, is_moe, global_step,
             asm_weighted=asm_weighted, class_weights=class_weights,

@@ -5,7 +5,7 @@
 #   bash rerun_clean.sh list              # work items "task:seed", in array-index order
 #   bash rerun_clean.sh list-cpu          # the items that need no GPU (rerun_clean_cpu.slurm)
 #   bash rerun_clean.sh <task>:<seed>     # run one item (skipped if already done)
-#   bash rerun_clean.sh smoke <task>      # exp18 1-fold / 2-epoch dry run, output to /tmp
+#   bash rerun_clean.sh smoke <task>      # any task: 1 outer fold, 2 inner folds, 2 epochs, outputs to /tmp or suffixed _smoke
 #   bash rerun_clean.sh verify            # gate: verify_oof + expected files + exp18 + HEP
 #   bash rerun_clean.sh archive-iv20      # move pre-2026-09-28 inner-split outputs aside (once)
 #   sbatch rerun_clean.slurm              # every item as a slurm array (see that file)
@@ -397,12 +397,18 @@ case "${1:-}" in
     verify) verify ;;
     archive-iv20) archive_iv20 ;;
     smoke)
-        # A quick end-to-end pass of one task on this host's data. Only exp18
-        # has a native smoke mode; the others are exercised with the real
-        # flags, so run them via slurm with a short --time instead.
-        [[ "${2:-}" == exp18_* ]] || { echo "smoke supports exp18_* tasks only" >&2; exit 2; }
-        "$PY" -m exp18_mixed_cohort.run_experiments --config "${2#exp18_}" --seeds 42 --smoke \
-            --out-dir "/tmp/exp18_smoke_$$" ;;
+        # An end-to-end dry run of one task on this host's data: first outer fold,
+        # two inner folds, two epochs (shared.cv_splits --smoke; exp18's own --smoke),
+        # seed 42, no done marker. Tasks that take an output directory write under
+        # $SMOKE_OUT; the others write beside their real outputs with every file
+        # suffixed _smoke, so no dry run can be taken for a result.
+        task="${2:-}"; [[ -n "$task" ]] || { echo "usage: smoke <task>" >&2; exit 2; }
+        SMOKE_OUT="${SMOKE_OUT:-/tmp/asm_smoke_$$}"; mkdir -p "$SMOKE_OUT"
+        OUT="$SMOKE_OUT"
+        CV_SEL+=(--smoke)
+        EXP18_SEL+=(--smoke --out-dir "$SMOKE_OUT/exp18_mixed_cohort")
+        echo "== smoke $task (outputs under $SMOKE_OUT, files suffixed _smoke) =="
+        run_task "$task" 42 ;;
     "") echo "usage: [PROTOCOL=refit|innersplit] bash rerun_clean.sh {preflight|list|verify|archive-iv20|smoke <task>|<task>:<seed>}" >&2; exit 2 ;;
     *:*)
         task="${1%%:*}"; seed="${1##*:}"

@@ -127,7 +127,7 @@ def dedupe_pid_mask(
             continue
         if outcome_col in d.columns and d.loc[pos, outcome_col].nunique() > 1:
             outs = sorted(set(d.loc[pos, outcome_col].tolist()))
-            logger.warning("pid %s: conflicting outcome %s -> %s", p, outs,
+            logger.warning("rows %s: one patient with conflicting outcomes %s -> %s", list(map(int, pos)), outs,
                            "drop" if on_outcome_conflict == "drop" else "keep-first")
             if on_outcome_conflict == "drop":
                 continue
@@ -136,7 +136,7 @@ def dedupe_pid_mask(
         best = max(pos, key=lambda i: (fill.iat[i], -i))
         differing = [c for c in d.columns if c != pid_col and d.loc[pos, c].astype(str).nunique() > 1]
         if differing:
-            logger.warning("pid %s: duplicate rows differ on %s; kept row %d", p, differing, best)
+            logger.warning("rows %s: one patient, rows differ on %s; kept row %d", list(map(int, pos)), differing, best)
         keep[best] = True
     assert pid[keep].is_unique, "dedupe left duplicate pids"
     return keep
@@ -155,7 +155,7 @@ def assert_oof_no_leakage(fold_pids: Sequence[Sequence]) -> None:
         assert len(s) == len(set(s)), f"fold {fi} contains duplicate pids"
         for p in set(s):
             if p in seen:
-                raise AssertionError(f"pid {p} leaks across folds {seen[p]} and {fi}")
+                raise AssertionError(f"a patient appears in folds {seen[p]} and {fi}")
             seen[p] = fi
 
 

@@ -84,9 +84,9 @@ def run_provenance() -> dict:
 def protocol_metadata(inner_val: float) -> dict:
     """Selection protocol of the active run ('legacy' / 'innersplit' / 'refit'),
     so consumers need not infer it from the filename."""
-    from shared.cv_splits import protocol_name, refit_folds
+    from shared.cv_splits import protocol_name, refit_folds, smoke
 
-    return {"protocol": protocol_name(inner_val), "refit_folds": refit_folds()}
+    return {"protocol": protocol_name(inner_val), "refit_folds": refit_folds(), "smoke": smoke()}
 
 
 class PredictionLogger:

@@ -33,7 +33,7 @@ from exp2_fusion.models.eeg_transformer import EEGWindowTransformer
 from exp2_fusion.models.aggregators import get_aggregator
 from exp2_fusion.training import train_epoch, evaluate
 from exp8_stratification.stratified_cv import get_multilabel_splits, get_outcome_only_splits
-from shared.cv_splits import add_cv_args, cv_suffix, outer_splits, rethreshold
+from shared.cv_splits import add_cv_args, cv_suffix, outer_splits, rethreshold, max_epochs, smoke_tag
 from shared.epoch_selection import run_outer_fold
 from shared.cv_splits import apply_cv_args  # noqa: E402
 from .config import RESULTS_DIR, CV_CONFIG, EEG_CACHE_PATH
@@ -336,7 +336,7 @@ def run_ablation_experiment(
         best_state = None
         patience_counter = 0
 
-        for epoch in range(100 if fixed_epochs is None else fixed_epochs):
+        for epoch in range(max_epochs(100) if fixed_epochs is None else fixed_epochs):
             train_epoch(model, train_loader, optimizer, criterion, device, is_moe=False)
             if fixed_epochs is not None:
                 continue
@@ -633,7 +633,7 @@ def run_all_ablations(
 
     # Save results
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    results_path = RESULTS_DIR / f"ablation_results_{timestamp}.json"
+    results_path = smoke_tag(RESULTS_DIR / f"ablation_results_{timestamp}.json")
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     with open(results_path, "w") as f:

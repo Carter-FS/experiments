@@ -68,7 +68,7 @@ def compute_all_quality_metrics(
                 windows, padding_mask, n_channels, quality_metrics = result
                 quality_results[pid] = quality_metrics
         except Exception as e:
-            logger.warning(f"Failed to process {pid}: {e}")
+            logger.warning(f"Failed to process recording {i + 1}: {e}")
             continue
 
     logger.info(f"Computed quality for {len(quality_results)} patients")
@@ -282,7 +282,7 @@ def run_quality_analysis(
 
     if len(problems) > 0:
         print(f"\n--- Problem Recordings ({len(problems)}) ---")
-        print(problems[["pid", "overall_quality", "artifact_ratio", "mean_snr_db", "issue"]].head(10).to_string(index=False))
+        print(problems[["overall_quality", "artifact_ratio", "mean_snr_db", "issue"]].head(10).to_string(index=False))  # no patient ids on the console
 
     # Save summary
     if save_results:

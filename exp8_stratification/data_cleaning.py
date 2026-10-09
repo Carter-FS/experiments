@@ -192,4 +192,4 @@ if __name__ == "__main__":
     print(generate_cleaning_report(report))
 
     print("\nSample of cleaned data:")
-    print(df[["pid", "outcome", "focal", "sex", "psy", "lesion"]].head(10))
+    print(df[["outcome", "focal", "sex", "psy", "lesion"]].head(10))  # no patient ids on the console

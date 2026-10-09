@@ -39,6 +39,14 @@ _REPEAT_SEED: int | None = None
 # runner through apply_cv_args; read by cv_suffix and the training loops.
 _REFIT_FOLDS: int = 0
 
+# Smoke mode (--smoke): an end-to-end dry run of an entry point on real data with
+# one outer fold, at most SMOKE_INNER_FOLDS inner folds, at most SMOKE_EPOCHS epochs
+# per training loop, and every output file suffixed "_smoke" so a dry run can never
+# be mistaken for a result. Set once through apply_cv_args.
+_SMOKE: bool = False
+SMOKE_EPOCHS = 2
+SMOKE_INNER_FOLDS = 2
+
 
 def set_repeat_seed(seed: int | None) -> None:
     global _REPEAT_SEED
@@ -53,8 +61,36 @@ def set_refit_folds(n: int) -> None:
 
 
 def refit_folds() -> int:
-    """Inner folds of the refit protocol, or 0 when it is not active."""
+    """Inner folds of the refit protocol, or 0 when it is not active (at most
+    ``SMOKE_INNER_FOLDS`` in smoke mode)."""
+    if _SMOKE and _REFIT_FOLDS:
+        return min(_REFIT_FOLDS, SMOKE_INNER_FOLDS)
     return _REFIT_FOLDS
+
+
+def set_smoke(on: bool) -> None:
+    global _SMOKE
+    _SMOKE = bool(on)
+
+
+def smoke() -> bool:
+    """True while the smoke mode is active."""
+    return _SMOKE
+
+
+def max_epochs(n: int) -> int:
+    """The epoch budget of a training loop: ``n``, or ``SMOKE_EPOCHS`` in smoke mode.
+    Every training loop takes its upper bound through this call."""
+    return min(int(n), SMOKE_EPOCHS) if _SMOKE else int(n)
+
+
+def smoke_tag(path):
+    """``path`` with ``_smoke`` before its suffix in smoke mode, unchanged otherwise.
+    Every result or summary file a runner names outside ``cv_suffix`` goes through
+    this call, so a dry run never leaves an untagged file beside real outputs."""
+    from pathlib import Path
+    path = Path(path)
+    return path.with_name(f"{path.stem}_smoke{path.suffix}") if _SMOKE else path
 
 
 def protocol_name(inner_val: float) -> str:
@@ -92,6 +128,12 @@ def outer_splits(
     repeated-CV seed (``set_repeat_seed``) replaces ``seed``.
     """
     seed = current_seed(seed)
+    splits = _outer_splits(df, mode, n_splits, seed, key_cols)
+    # smoke mode: the first outer fold only (the split itself is unchanged)
+    return splits[:1] if _SMOKE else splits
+
+
+def _outer_splits(df, mode, n_splits, seed, key_cols) -> list[tuple[np.ndarray, np.ndarray]]:
     if mode == "legacy":
         # Identical construction to the original run_cross_validation loops:
         # StratifiedKFold(5, shuffle=True, 42).split(np.zeros(n), outcome).
@@ -169,6 +211,11 @@ def add_cv_args(parser: argparse.ArgumentParser, default_splitter: str = "legacy
         help="Repeated-CV seed: outer split seed s, inner split seed s + fold, "
              "determinism seed s (default: the experiment's original seed, 42).",
     )
+    parser.add_argument(
+        "--smoke", action="store_true", dest="smoke",
+        help=f"Dry run: first outer fold only, at most {SMOKE_INNER_FOLDS} inner folds and "
+             f"{SMOKE_EPOCHS} epochs; output files are suffixed _smoke.",
+    )
 
 
 def apply_cv_args(args: argparse.Namespace) -> None:
@@ -178,16 +225,17 @@ def apply_cv_args(args: argparse.Namespace) -> None:
         raise SystemExit("--refit-folds and --inner-val are alternative protocols; pass one")
     set_repeat_seed(getattr(args, "cv_seed", None))
     set_refit_folds(refit)
+    set_smoke(getattr(args, "smoke", False))
 
 
 def cv_suffix(splitter: str, inner_val: float, cv_seed: int | None = None) -> str:
     """Filename suffix for a CV protocol: empty for the legacy protocol (so its
     files keep the archived names), otherwise e.g. ``_sp-multilabel_iv20`` or,
     under the refit protocol, ``_sp-multilabel_rf5``, plus ``_s<seed>`` for an
-    explicit repeated-CV seed."""
+    explicit repeated-CV seed and ``_smoke`` in smoke mode."""
     if cv_seed is None:
         cv_seed = _REPEAT_SEED
-    seed = "" if cv_seed is None else f"_s{cv_seed}"
+    seed = ("" if cv_seed is None else f"_s{cv_seed}") + ("_smoke" if _SMOKE else "")
     if _REFIT_FOLDS:
         return f"_sp-{splitter}_rf{_REFIT_FOLDS}{seed}"
     if splitter == "legacy" and inner_val == 0:

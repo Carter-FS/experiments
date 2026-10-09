@@ -21,7 +21,7 @@ from shared.eeg_cache import load_cache
 from sklearn.metrics import balanced_accuracy_score, roc_auc_score, roc_curve
 from torch.utils.data import DataLoader, TensorDataset
 
-from shared.cv_splits import current_seed
+from shared.cv_splits import current_seed, max_epochs
 
 CV_SEED = 42
 
@@ -170,7 +170,7 @@ def train_fold(
     best_val_auc = 0.0
     best_state = None
     patience_counter = 0
-    for epoch in range(N_EPOCHS_MAX if fixed_epochs is None else fixed_epochs):
+    for epoch in range(max_epochs(N_EPOCHS_MAX) if fixed_epochs is None else fixed_epochs):
         model.train()
         for batch in train_loader:
             *features, labels = batch
@@ -341,7 +341,7 @@ def train_fold_eeg(
     best_val_auc = 0.0
     best_state = None
     patience_counter = 0
-    for epoch in range(EEG_N_EPOCHS_MAX if fixed_epochs is None else fixed_epochs):
+    for epoch in range(max_epochs(EEG_N_EPOCHS_MAX) if fixed_epochs is None else fixed_epochs):
         model.train()
         for batch_mod, batch_labels in iterate_minibatches(train_modalities, train_labels, EEG_BATCH_SIZE, True, rng):
             batch_mod = to_device(batch_mod, device)

@@ -16,7 +16,7 @@ from .data_pipeline import (
     prepare_quad_modality_data,
 )
 from .models import get_model
-from shared.cv_splits import outer_splits, rethreshold, current_seed
+from shared.cv_splits import outer_splits, rethreshold, current_seed, max_epochs
 from shared.epoch_selection import run_outer_fold
 
 logger = logging.getLogger("exp7")
@@ -403,7 +403,7 @@ def train_fold(
     patience_counter = 0
     global_step = 0
 
-    for epoch in range(config["epochs"] if fixed_epochs is None else fixed_epochs):
+    for epoch in range(max_epochs(config["epochs"]) if fixed_epochs is None else fixed_epochs):
         if fusion == "moe":
             train_loss, global_step = train_fn(
                 model, train_loader, optimizer, criterion, device, global_step,
@@ -736,7 +736,7 @@ def train_fold_with_predictions(
         num_workers=0,
     )
 
-    for epoch in range(config["epochs"] if fixed_epochs is None else fixed_epochs):
+    for epoch in range(max_epochs(config["epochs"]) if fixed_epochs is None else fixed_epochs):
         if fusion == "moe":
             train_loss, global_step = train_fn(
                 model, train_loader_for_loss, optimizer, criterion, device, global_step,

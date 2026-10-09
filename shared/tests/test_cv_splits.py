@@ -106,3 +106,78 @@ def test_multilabel_refuses_missing_columns():
     df = _cohort().drop(columns=["sex"])
     with pytest.raises(ValueError, match="sex"):
         outer_splits(df, mode="multilabel")
+
+
+def test_smoke_mode_limits_folds_epochs_and_tags_outputs():
+    import argparse
+    from shared import cv_splits as cv
+    from shared.prediction_logger import protocol_metadata
+    df = _cohort()
+    parser = argparse.ArgumentParser()
+    cv.add_cv_args(parser)
+    args = parser.parse_args(["--splitter", "multilabel", "--refit-folds", "5", "--cv-seed", "42", "--smoke"])
+    try:
+        cv.apply_cv_args(args)
+        assert cv.smoke() and cv.refit_folds() == cv.SMOKE_INNER_FOLDS == 2
+        assert cv.max_epochs(100) == cv.SMOKE_EPOCHS == 2 and cv.max_epochs(1) == 1
+        full = cv._outer_splits(df, "legacy", 5, 42, None)
+        got = cv.outer_splits(df, mode="legacy", seed=42)
+        assert len(got) == 1 and np.array_equal(got[0][1], full[0][1])   # the first fold, unchanged
+        assert cv.cv_suffix("multilabel", 0.0) == "_sp-multilabel_rf5_s42_smoke"
+        assert protocol_metadata(0.0) == {"protocol": "refit", "refit_folds": 2, "smoke": True}
+    finally:
+        cv.apply_cv_args(parser.parse_args([]))
+    assert not cv.smoke() and cv.refit_folds() == 0 and cv.max_epochs(100) == 100
+    assert len(cv.outer_splits(df, mode="legacy", seed=42)) == 5 and cv.cv_suffix("legacy", 0.0) == ""
+    assert protocol_metadata(0.2) == {"protocol": "innersplit", "refit_folds": 0, "smoke": False}
+
+
+# Runners of the clean rerun whose training loops must honour the smoke epoch budget.
+SMOKE_RUNNERS = [
+    "exp1_fusion.training", "exp2_fusion.training", "exp3_fusion.training", "exp4_baseline.training",
+    "exp5_clinical_fusion.training", "exp6_clinical_triple.training", "exp7_all_modalities.training",
+    "exp9_eeg_investigation.run_experiments", "exp11_eeg_upgrade.run_experiments",
+    "exp15_reve_quad_mlp.training", "exp16_reduced_capacity.training", "shared.portable_models",
+]
+
+
+@pytest.mark.parametrize("module", SMOKE_RUNNERS)
+def test_every_epoch_loop_takes_its_budget_through_max_epochs(module):
+    import importlib
+    import inspect
+    import re
+    mod = importlib.import_module(module)
+    assert callable(getattr(mod, "max_epochs", None)), f"{module} does not import max_epochs at module level"
+    loops = re.findall(r"for epoch in range\(([^\n]*)\):", inspect.getsource(mod))
+    assert loops, f"{module} has no epoch loop"
+    for bound in loops:
+        assert "max_epochs(" in bound, f"{module}: epoch loop bound {bound!r} bypasses max_epochs"
+
+
+SUMMARY_WRITERS = ["exp3_fusion.run_experiments", "exp4_baseline.run_experiments", "exp5_clinical_fusion.run_experiments",
+                   "exp6_clinical_triple.run_experiments", "exp7_all_modalities.run_experiments",
+                   "exp9_eeg_investigation.run_experiments", "exp11_eeg_upgrade.run_experiments"]
+
+
+def test_smoke_tag_marks_files_only_in_smoke_mode():
+    from pathlib import Path
+    from shared import cv_splits as cv
+    assert cv.smoke_tag(Path("outputs/x/results_1.json")) == Path("outputs/x/results_1.json")
+    try:
+        cv.set_smoke(True)
+        assert cv.smoke_tag("outputs/x/results_1.json") == Path("outputs/x/results_1_smoke.json")
+    finally:
+        cv.set_smoke(False)
+
+
+@pytest.mark.parametrize("module", SUMMARY_WRITERS)
+def test_every_timestamped_summary_path_is_smoke_tagged(module):
+    import importlib
+    import inspect
+    import re
+    mod = importlib.import_module(module)
+    assert callable(getattr(mod, "smoke_tag", None)), f"{module} does not import smoke_tag at module level"
+    src = inspect.getsource(mod)
+    for line in src.splitlines():
+        if "RESULTS_DIR / f\"" in line and "{timestamp}" in line:
+            assert "smoke_tag(" in line, f"{module}: untagged summary path: {line.strip()}"

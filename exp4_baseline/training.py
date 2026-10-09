@@ -14,7 +14,7 @@ from .config import CONFIG_4A, CONFIG_4B, CV_CONFIG
 from .data_pipeline import ClinicalDataset, create_datasets, load_clinical_data
 from .models import get_model
 from shared.asm_balancing import WeightedASMDataset, compute_asm_sample_weights, weighted_cross_entropy
-from shared.cv_splits import outer_splits, rethreshold
+from shared.cv_splits import outer_splits, rethreshold, max_epochs
 from shared.epoch_selection import run_outer_fold
 
 logger = logging.getLogger("exp4")
@@ -239,7 +239,7 @@ def train_fold(
     best_state = None
     patience_counter = 0
 
-    for epoch in range(config["epochs"] if fixed_epochs is None else fixed_epochs):
+    for epoch in range(max_epochs(config["epochs"]) if fixed_epochs is None else fixed_epochs):
         train_loss = train_epoch(model, train_loader, optimizer, criterion, device, asm_weighted=asm_weighted)
         if fixed_epochs is not None:
             continue

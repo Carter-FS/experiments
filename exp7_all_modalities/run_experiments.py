@@ -17,7 +17,7 @@ from typing import Dict, List, Optional
 import numpy as np
 import torch
 
-from shared.cv_splits import add_cv_args, current_seed, cv_suffix, outer_splits, refit_folds, rethreshold
+from shared.cv_splits import add_cv_args, current_seed, cv_suffix, outer_splits, refit_folds, rethreshold, smoke_tag
 from shared.epoch_selection import refit_protocol, run_outer_fold
 from shared.cv_splits import apply_cv_args  # noqa: E402
 from shared.prediction_logger import protocol_metadata, run_provenance
@@ -641,10 +641,10 @@ def main():
 
     # Save results
     if args.output:
-        output_path = Path(args.output)
+        output_path = smoke_tag(Path(args.output))
     else:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_path = RESULTS_DIR / f"results_{timestamp}.json"
+        output_path = smoke_tag(RESULTS_DIR / f"results_{timestamp}.json")
 
     save_results(all_results, output_path)
 

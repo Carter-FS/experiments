@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader
 # Add parent directory for exp8_stratification import
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from exp8_stratification.stratified_cv import get_multilabel_splits, get_outcome_only_splits
-from shared.cv_splits import outer_splits, rethreshold, current_seed
+from shared.cv_splits import outer_splits, rethreshold, current_seed, max_epochs
 from shared.epoch_selection import run_outer_fold
 
 from .config import CV_CONFIG, TRAINING_CONFIG
@@ -439,7 +439,7 @@ def train_fold(
     best_state = None
     patience_counter = 0
 
-    for epoch in range(config["epochs"] if fixed_epochs is None else fixed_epochs):
+    for epoch in range(max_epochs(config["epochs"]) if fixed_epochs is None else fixed_epochs):
         train_loss = train_fn(
             model, train_loader, optimizer, criterion, device,
             asm_weighted=asm_weighted, class_weights=class_weights,

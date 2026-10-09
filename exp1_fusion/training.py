@@ -18,7 +18,7 @@ from .config import (
 )
 from .data_pipeline import get_full_dataset, load_csv_data
 from shared.asm_balancing import WeightedASMDataset, compute_asm_sample_weights, weighted_cross_entropy
-from shared.cv_splits import outer_splits, rethreshold
+from shared.cv_splits import outer_splits, rethreshold, max_epochs
 from shared.epoch_selection import run_outer_fold
 from .models import ConcatMLPClassifier, SimplifiedFuseMoE
 
@@ -320,7 +320,7 @@ def run_experiment(
         best_model_state = None
         global_step = 0
 
-        for epoch in range(config['epochs'] if fixed_epochs is None else fixed_epochs):
+        for epoch in range(max_epochs(config['epochs']) if fixed_epochs is None else fixed_epochs):
             if fixed_epochs is not None and refit_choice is not None and refit_choice.lr_schedule:
                 for group in optimizer.param_groups:
                     group['lr'] = refit_choice.lr_schedule[epoch]

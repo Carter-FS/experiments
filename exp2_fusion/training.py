@@ -21,7 +21,7 @@ from .config import BATCH_SIZE_BY_ENCODER, CHUNK_SIZE_BY_ENCODER, EMBED_DIM_BY_E
 from .data_pipeline import EEGSMILESDataset, create_datasets, get_max_channels, prepare_data
 from shared.cohort import add_stratification_columns
 from shared.asm_balancing import WeightedASMDataset, compute_asm_sample_weights, weighted_cross_entropy
-from shared.cv_splits import outer_splits, rethreshold, current_seed
+from shared.cv_splits import outer_splits, rethreshold, current_seed, max_epochs
 from shared.epoch_selection import run_outer_fold
 from .models.fusion import get_fusion_model
 
@@ -301,7 +301,7 @@ def train_fold(
     patience_counter = 0
     global_step = 0
 
-    for epoch in range(config["epochs"] if fixed_epochs is None else fixed_epochs):
+    for epoch in range(max_epochs(config["epochs"]) if fixed_epochs is None else fixed_epochs):
         if fixed_epochs is not None and refit_choice is not None and refit_choice.lr_schedule:
             for group in optimizer.param_groups:
                 group["lr"] = refit_choice.lr_schedule[epoch]

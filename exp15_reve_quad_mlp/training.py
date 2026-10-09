@@ -38,7 +38,7 @@ from exp7_all_modalities.training import (  # noqa: E402
     log_cv_summary,
     train_epoch_mlp,
 )
-from shared.cv_splits import current_seed, fold_indices, outer_splits  # noqa: E402
+from shared.cv_splits import current_seed, fold_indices, outer_splits, max_epochs  # noqa: E402
 from shared.epoch_selection import run_outer_fold
 
 logger = logging.getLogger("exp15")
@@ -136,7 +136,7 @@ def train_fold(
     best_state = None
     patience_counter = 0
 
-    for epoch in range(config["epochs"] if fixed_epochs is None else fixed_epochs):
+    for epoch in range(max_epochs(config["epochs"]) if fixed_epochs is None else fixed_epochs):
         train_loss = train_epoch_mlp(
             model, train_loader, optimizer, criterion, device,
             asm_weighted=asm_weighted, class_weights=class_weights,
@@ -350,7 +350,7 @@ def train_fold_with_predictions(
     best_state_dict = None
     patience_counter = 0
 
-    for epoch in range(config["epochs"] if fixed_epochs is None else fixed_epochs):
+    for epoch in range(max_epochs(config["epochs"]) if fixed_epochs is None else fixed_epochs):
         train_loss = train_epoch_mlp(
             model, train_loader_for_loss, optimizer, criterion, device,
             asm_weighted=asm_weighted, class_weights=class_weights,
