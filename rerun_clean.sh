@@ -269,8 +269,6 @@ preflight () {
         "'$PY' -m shared.eeg_features check --feature-set reve_v2 --cohort alfred > /dev/null"
     check "LaBraM features v2 (exp9 encoder_labram_pretrained_frozen, exp15; python -m shared.labram_pretrained extract)" \
         "'$PY' -m shared.eeg_features check --feature-set labram_v2 --cohort alfred > /dev/null"
-    check "pretrained LaBraM weights (exp9 labram_pretrained encoder; python -m shared.labram_pretrained export-weights)" \
-        "[[ -f $OUT/labram_base_19ch.pt ]]"
     check "legacy exp9 EEG2Vec OOF file (reve's 147-patient cohort)" \
         "[[ -f $OUT/exp9_predictions/predictions_oof_exp9_encoder_eeg2vec.json ]]"
     check "logs/ directory (slurm opens its log files before the job starts)" "mkdir -p logs"
@@ -322,7 +320,7 @@ expected_files () {
 filter_deferred_files () {
     if [[ "${RUN_DEFERRED:-0}" == 1 ]]; then cat; return; fi
     local drop='^exp11_predictions/|^exp9_predictions/predictions_oof_exp9_(encoder_frozen|aggregator_|embed_dim_)'
-    [[ "$PROTOCOL" == innersplit ]] && drop="$drop"'|^exp9_predictions/predictions_oof_exp9_(baseline|encoder_(eegnet|labram|eeg2vec))|^exp7_predictions/predictions_oof_(7b|asmstratbatch)|^exp16_predictions/|^exp17_predictions/'
+    [[ "$PROTOCOL" == innersplit ]] && drop="$drop"'|^exp9_predictions/predictions_oof_exp9_(baseline|encoder_(eegnet|labram|eeg2vec|reve))|^exp7_predictions/predictions_oof_(7b|asmstratbatch)|^exp16_predictions/|^exp17_predictions/'
     grep -vE "$drop"
 }
 

@@ -66,9 +66,9 @@ def load_features(feature_set: str, cohort: str = "alfred",
     The file must have the registered width, ``MAX_WINDOWS`` rows per recording, finite
     values, unique pids and valid counts within range; padded rows are zeroed.
     """
-    spec = FEATURE_SETS[feature_set] if feature_set in FEATURE_SETS else None
-    if spec is None:
+    if feature_set not in FEATURE_SETS:
         raise ValueError(f"unknown feature set {feature_set!r}; known: {sorted(FEATURE_SETS)}")
+    spec = FEATURE_SETS[feature_set]
     path = Path(path) if path is not None else feature_path(feature_set, cohort)
     if not path.exists():
         raise FileNotFoundError(f"{feature_set} features not found at {path}; produce them with {spec['producer']}")

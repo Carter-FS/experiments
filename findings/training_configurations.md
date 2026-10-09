@@ -168,7 +168,10 @@ patience 20, gradient clipping 1.0, no ASM balancing.
 
 Both frozen arms go through the same aggregator and head as the trained-from-scratch
 encoders (encoder type `precomputed`, `shared/eeg_features.py`); the standalone REVE
-script no longer supplies the encoder-table row. The raw-EEG arms read the cache under
+script no longer supplies the encoder-table row. The aggregator's token width equals
+each arm's window embedding (256 for SimpleCNN, EEGNet and EEG2Vec, 128 for the
+scratch LaBraM, 200 and 512 for the frozen LaBraM-base and REVE-base features), so the
+aggregator's parameter count differs between arms; its output width is 256 throughout. The raw-EEG arms read the cache under
 the per-window z-score; the feature sets were written from the same cache. A fine-tuned
 LaBraM-base arm is scheduled after the frozen-feature results.
 

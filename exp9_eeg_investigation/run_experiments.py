@@ -26,7 +26,7 @@ sys.path.insert(0, str(BASE_DIR))
 from exp2_fusion.config import EEG_CONFIG, MODEL_CONFIG, TRAIN_CONFIG, BATCH_SIZE_BY_ENCODER, CHUNK_SIZE_BY_ENCODER
 from exp2_fusion.data_pipeline import create_datasets, get_max_channels, load_smiles_embeddings
 from shared.eeg_cache import eeg_patient_frame, load_cache
-from shared.eeg_features import FEATURE_SETS, load_features
+from shared.eeg_features import FEATURE_SETS, feature_meta, load_features
 from shared.cohort import add_stratification_columns
 from exp2_fusion.models.eeg_encoders import get_eeg_encoder, SimpleCNNEncoder
 from exp2_fusion.models.eeg_transformer import EEGWindowTransformer
@@ -203,13 +203,16 @@ def input_key(spec: Dict) -> str:
 
 
 def load_eeg_input(spec: Dict, cohort: str = "alfred"):
-    """EEG windows or stored features for every cached recording, plus the patient frame
-    (CSV rows with a usable outcome and a recording)."""
+    """EEG windows or stored features for every cached recording, the patient frame
+    (CSV rows with a usable outcome and a recording), and the input's provenance
+    (the spec plus a stored feature file's producer metadata, when it has any)."""
+    input_meta = dict(spec)
     if spec["kind"] == "cache":
         eeg_data = load_cache(EEG_CACHE_PATH, spec["convention"])
     else:
         eeg_data = load_features(spec["feature_set"], cohort)
-    return eeg_data, eeg_patient_frame(eeg_data.keys())
+        input_meta["producer_meta"] = feature_meta(spec["feature_set"], cohort)
+    return eeg_data, eeg_patient_frame(eeg_data.keys()), input_meta
 
 
 def run_ablation_experiment(
@@ -589,7 +592,7 @@ def run_all_ablations(
     for key, group in groups.items():
         spec = json.loads(key)
         logger.info(f"Loading EEG input {spec} for {len(group)} arm(s)")
-        eeg_data, df = load_eeg_input(spec)
+        eeg_data, df, input_meta = load_eeg_input(spec)
         pids = df["pid"].astype(str).tolist()
         if cohort_pids is None:
             cohort_pids = pids
@@ -606,7 +609,7 @@ def run_all_ablations(
                         exp_id=f"exp9_{exp_config['name']}",
                         output_dir=pred_dir,
                         filename=f"predictions_oof_exp9_{exp_config['name']}{suffix}.json",
-                        metadata={"splitter": splitter, "inner_val": inner_val, "eeg_input": spec},
+                        metadata={"splitter": splitter, "inner_val": inner_val, "eeg_input": input_meta},
                     )
                 results = run_ablation_experiment(
                     exp_config,
@@ -674,7 +677,7 @@ if __name__ == "__main__":
                         help="Disable multi-label stratification (legacy splitter only)")
     parser.add_argument("--quick", action="store_true", help="Run only baseline experiment")
     parser.add_argument("--experiment", type=str, default=None,
-                        help="Run only the named experiment (e.g. encoder_labram)")
+                        help="Run only the named experiment (e.g. encoder_labram_scratch)")
     parser.add_argument("--log-predictions", action="store_true",
                         help="Dump per-fold OOF predictions to outputs/exp9_predictions/")
     parser.add_argument("--deterministic", action="store_true",

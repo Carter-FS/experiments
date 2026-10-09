@@ -147,6 +147,28 @@ def test_exp9_arms_declare_their_eeg_inputs():
         r.input_spec({"name": "x", "encoder_type": "simplecnn", "input": {"kind": "cache", "convention": "raw_uv"}})
 
 
+def test_exp9_load_eeg_input_reads_the_cache_or_a_feature_file(tmp_path, monkeypatch):
+    """The unpatched loader: a cache spec gives normalised windows, a feature spec gives
+    stored features, and both give the CSV rows with a cached recording."""
+    import exp9_eeg_investigation.run_experiments as r
+    cache = _write_cache(tmp_path / "eeg19_v2_alfred.pkl", ["8", "9"], [6, 3])
+    _write_features(tmp_path / "labram_features_v2_alfred.npz", ["8", "9"], [6, 3], 200)
+    csv = tmp_path / "alfred_1st_regimen.csv"
+    pd.DataFrame({"pid": ["8", "9", "10"], "outcome": [1, 2, 1], "ASM": ["LEV"] * 3, "focal": [1, 0, 1],
+                  "sex": [0, 1, 0]}).to_csv(csv, index=False)
+    monkeypatch.setattr(r, "EEG_CACHE_PATH", cache)
+    monkeypatch.setattr(F, "OUT_DIR", tmp_path)
+    monkeypatch.setattr(r, "eeg_patient_frame", lambda pids: C.eeg_patient_frame(pids, csv_path=csv))
+    eeg, df, meta = r.load_eeg_input({"kind": "cache", "convention": "zscore_window"})
+    assert df["pid"].tolist() == ["8", "9"] and df["outcome"].tolist() == [1, 0] and meta == {"kind": "cache", "convention": "zscore_window"}
+    w, m = eeg["8"]
+    assert w.shape == (MAX_WINDOWS, 19, 2000) and int((~m).sum()) == 6
+    assert abs(float(w[~m].std(axis=-1).mean()) - 0.0) < 1e-6  # constant windows z-score to zero
+    eeg, df2, meta = r.load_eeg_input({"kind": "features", "feature_set": "labram_v2"})
+    assert df2["pid"].tolist() == ["8", "9"] and eeg["9"][0].shape == (MAX_WINDOWS, 200) and int((~eeg["9"][1]).sum()) == 3
+    assert meta["producer_meta"] == {"made_by": "test"}
+
+
 def test_exp9_rejects_a_width_mismatch_for_a_feature_arm():
     import exp9_eeg_investigation.run_experiments as r
     arm = {"name": "bad", "encoder_type": "precomputed", "input": {"kind": "features", "feature_set": "reve_v2"},
@@ -183,7 +205,7 @@ def test_exp9_runs_raw_and_feature_arms_on_one_cohort(tmp_path, monkeypatch):
 
     def fake_load(spec, cohort="alfred"):
         loads.append(spec)
-        return (raw if spec["kind"] == "cache" else feat), df.copy()
+        return (raw if spec["kind"] == "cache" else feat), df.copy(), dict(spec)
 
     monkeypatch.setattr(r, "load_eeg_input", fake_load)
     monkeypatch.setattr(r, "load_smiles_embeddings", lambda m: (np.ones((1, 8), np.float32), {"LEV": 0}))
@@ -213,8 +235,8 @@ def test_exp9_refuses_inputs_with_different_cohorts(tmp_path, monkeypatch):
 
     def fake_load(spec, cohort="alfred"):
         if spec["kind"] == "cache":
-            return raw, df.copy()
-        return feat, df.iloc[:-1].copy()
+            return raw, df.copy(), dict(spec)
+        return feat, df.iloc[:-1].copy(), dict(spec)
 
     monkeypatch.setattr(r, "load_eeg_input", fake_load)
     monkeypatch.setattr(r, "load_smiles_embeddings", lambda m: (np.ones((1, 8), np.float32), {"LEV": 0}))
