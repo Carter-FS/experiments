@@ -1,6 +1,8 @@
 """EEG encoder wrappers for extracting embeddings from EEG windows."""
 
 import logging
+import warnings
+from pathlib import Path
 from typing import Optional, Tuple
 
 import torch
@@ -367,6 +369,132 @@ class EEG2VecEncoder(nn.Module):
         return mu
 
 
+class PretrainedLaBraMEncoder(nn.Module):
+    """LaBraM-base with the published pretrained weights (vendored architecture).
+
+    Input windows must be in the ``labram`` cache convention (microvolts / 100) with the
+    19 standard channels in cache order; the channel names the weights were exported
+    with are passed on every forward call, so the pretrained channel embeddings are the
+    ones selected. ``pooling="mean"`` is the official fine-tuning head input (mean over
+    the patch tokens through a LayerNorm that starts at identity); ``pooling="cls"`` is
+    the [CLS] token after the pretrained final norm. With ``frozen=True`` no parameter
+    trains and the model stays in evaluation mode whatever the parent's mode, so the
+    features equal those written by ``shared.labram_pretrained.extract_features``.
+
+    The weights file is written by ``python -m shared.labram_pretrained export-weights``
+    (run in ``.venv-reve``) and lives outside git in ``outputs/``.
+    """
+
+    INPUT_CONVENTION = "labram"
+
+    def __init__(
+        self,
+        n_channels: int = N_CHANNELS,
+        n_times: int = 2000,
+        emb_size: int = 200,
+        pooling: str = "mean",
+        frozen: bool = True,
+        dropout: float = 0.0,
+        drop_path_prob: float = 0.0,
+        weights_path: Optional[Path] = None,
+    ):
+        super().__init__()
+        from shared.labram_pretrained import EMBED_DIM, WEIGHTS_19CH_PATH  # constants only
+        from shared.vendor.labram import Labram
+
+        if pooling not in ("mean", "cls"):
+            raise ValueError(f"pooling must be 'mean' or 'cls', not {pooling!r}")
+        if emb_size != EMBED_DIM:
+            raise ValueError(f"LaBraM-base features are {EMBED_DIM}-dimensional; emb_size={emb_size} is not supported")
+        path = Path(weights_path or WEIGHTS_19CH_PATH)
+        if not path.exists():
+            raise FileNotFoundError(
+                f"{path} not found. Run `python -m shared.labram_pretrained export-weights` in .venv-reve first."
+            )
+        payload = torch.load(path, map_location="cpu", weights_only=False)
+        model_kwargs = dict(payload["model_kwargs"])
+        if (model_kwargs["n_chans"], model_kwargs["n_times"]) != (n_channels, n_times):
+            raise ValueError(
+                f"weights are for {model_kwargs['n_chans']} channels x {model_kwargs['n_times']} samples, "
+                f"not {n_channels} x {n_times}"
+            )
+        model_kwargs.update(drop_prob=dropout, drop_path_prob=drop_path_prob)
+        with warnings.catch_warnings():
+            # the vendored model notes that 19 channels are not its 128-channel layout;
+            # the channel names are passed to every forward call, which is the supported path
+            warnings.filterwarnings("ignore", message="Labram chs_info does not match")
+            self.model = Labram(
+                **model_kwargs,
+                use_mean_pooling=(pooling == "mean"),
+                chs_info=[{"ch_name": c} for c in payload["labram_ch_names"]],
+            )
+        conventions = payload["pooling"][pooling]
+        state = {k: v for k, v in payload["state_dict"].items() if k not in conventions["drop_keys"]}
+        missing, unexpected = self.model.load_state_dict(state, strict=False)
+        if set(missing) != set(conventions["fresh_keys"]) or unexpected:
+            raise RuntimeError(f"unexpected weight mismatch: missing {missing}, unexpected {unexpected}")
+
+        self.n_channels = n_channels
+        self.n_times = n_times
+        self.emb_size = emb_size
+        self.pooling = pooling
+        self.frozen = frozen
+        self.ch_names = list(payload["labram_ch_names"])
+        self.input_chans = list(payload["input_chans"])
+        self.provenance = {k: payload[k] for k in ("hub_repo", "hub_revision", "hub_safetensors_sha256", "braindecode_version")}
+        if frozen:
+            for param in self.model.parameters():
+                param.requires_grad_(False)
+            self.model.eval()
+
+    def train(self, mode: bool = True) -> "PretrainedLaBraMEncoder":
+        super().train(mode)
+        if self.frozen:
+            self.model.eval()  # no dropout or drop path on frozen features
+        return self
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """(batch, channels, time) in the labram convention -> (batch, emb_size)."""
+        if x.ndim != 3 or x.shape[1:] != (self.n_channels, self.n_times):
+            raise ValueError(f"expected (batch, {self.n_channels}, {self.n_times}), got {tuple(x.shape)}")
+        if self.frozen:
+            with torch.no_grad():
+                return self.model(x, ch_names=self.ch_names)
+        return self.model(x, ch_names=self.ch_names)
+
+
+class PrecomputedFeatureEncoder(nn.Module):
+    """Identity over per-window features computed outside training (REVE or the
+    pretrained LaBraM feature files), so the window aggregator and classifier are
+    shared with the raw-EEG encoders. Input (batch, emb_size); no parameters.
+    """
+
+    INPUT_CONVENTION = "precomputed"
+
+    def __init__(self, emb_size: int, n_channels: int = N_CHANNELS, n_times: int = 2000):
+        super().__init__()
+        self.emb_size = emb_size
+        # kept so callers can treat every encoder alike; a feature window has no time axis
+        self.n_channels = n_channels
+        self.n_times = n_times
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.ndim != 2 or x.shape[-1] != self.emb_size:
+            raise ValueError(f"expected (batch, {self.emb_size}) precomputed features, got {tuple(x.shape)}")
+        return x
+
+
+def flatten_windows(windows: torch.Tensor) -> Tuple[torch.Tensor, int, int]:
+    """``(batch, num_windows, *per_window)`` -> ``(batch * num_windows, *per_window)``
+    plus the batch and window counts. Raw EEG windows are ``(channels, time)``;
+    precomputed features are ``(dim,)``."""
+    batch_size, num_windows = windows.shape[:2]
+    return windows.reshape(batch_size * num_windows, *windows.shape[2:]), batch_size, num_windows
+
+
+ENCODER_TYPES = ("labram", "eegnet", "simplecnn", "eeg2vec", "labram_pretrained", "precomputed")
+
+
 def get_eeg_encoder(
     encoder_type: str = "labram",
     n_channels: int = N_CHANNELS,
@@ -377,7 +505,9 @@ def get_eeg_encoder(
     """Factory function to get EEG encoder by type.
 
     Args:
-        encoder_type: Type of encoder ('labram', 'eegnet', 'simplecnn', 'eeg2vec').
+        encoder_type: One of ``ENCODER_TYPES``: 'labram' (architecture trained from
+            scratch), 'eegnet', 'simplecnn', 'eeg2vec', 'labram_pretrained' (published
+            weights, vendored architecture) or 'precomputed' (identity over features).
         n_channels: Number of EEG channels.
         n_times: Number of time samples per window.
         emb_size: Embedding dimension.
@@ -392,7 +522,21 @@ def get_eeg_encoder(
     """
     logger.info(f"Creating EEG encoder: {encoder_type}")
 
-    if encoder_type == "labram":
+    if encoder_type == "labram_pretrained":
+        return PretrainedLaBraMEncoder(
+            n_channels=n_channels,
+            n_times=n_times,
+            emb_size=emb_size,
+            **kwargs,
+        )
+    elif encoder_type == "precomputed":
+        return PrecomputedFeatureEncoder(
+            emb_size=emb_size,
+            n_channels=n_channels,
+            n_times=n_times,
+            **kwargs,
+        )
+    elif encoder_type == "labram":
         if not LABRAM_AVAILABLE:
             logger.error(f"LaBraM requested but braindecode not available: {LABRAM_IMPORT_ERROR}")
             raise ImportError(
@@ -437,7 +581,7 @@ def get_eeg_encoder(
     else:
         raise ValueError(
             f"Unknown encoder type: {encoder_type}. "
-            f"Available: labram, eegnet, simplecnn, eeg2vec"
+            f"Available: {', '.join(ENCODER_TYPES)}"
         )
 
 

@@ -213,7 +213,7 @@ class ClinicalSMILESEEGFusion(nn.Module):
         Returns:
             Aggregated EEG embedding (batch, hidden_dim)
         """
-        batch_size, num_windows, n_channels, n_times = windows.shape
+        batch_size, num_windows = windows.shape[:2]  # per-window shape: (channels, time) or (dim,)
 
         # Encode windows in chunks
         all_embeddings = []
@@ -222,7 +222,7 @@ class ClinicalSMILESEEGFusion(nn.Module):
             chunk_size = chunk.shape[1]
 
             # Flatten for encoding
-            chunk_flat = chunk.reshape(batch_size * chunk_size, n_channels, n_times)
+            chunk_flat = chunk.reshape(batch_size * chunk_size, *windows.shape[2:])
 
             # Encode
             chunk_emb = self.window_encoder(chunk_flat)

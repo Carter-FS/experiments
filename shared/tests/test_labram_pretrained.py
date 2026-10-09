@@ -3,6 +3,7 @@ no Hub support). The pinned hub weights are read from the local Hugging Face cac
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -199,6 +200,22 @@ def test_export_weights_round_trip(tmp_path, hub_state):
     assert chans[0] == 0 and len(chans) == 20
     assert chans[1 + list(C.CH_NAMES).index("T7")] == 89 and chans[1 + list(C.CH_NAMES).index("FP1")] == 1
     assert saved["pooling"]["mean"]["drop_keys"] == ["norm.weight", "norm.bias"]
+
+
+def test_reference_fixture_matches_the_hub_model(hub_state):
+    """The fixture the vendored copy is checked against was recorded from this model."""
+    fixture = Path(__file__).with_name("fixtures") / "labram_19ch_reference.npz"
+    d = np.load(fixture)
+    meta = json.loads(d["meta"].item())
+    assert meta["hub_revision"] == LP.HUB_REVISION and meta["model_kwargs"] == LP.MODEL_KWARGS
+    assert meta["input_chans"] == LP.input_chans() and meta["labram_ch_names"] == list(LP.LABRAM_CH_NAMES)
+    x = torch.from_numpy(d["x"])
+    assert torch.equal(x, torch.randn(2, LP.N_CHANNELS, LP.SAMPLES_PER_WINDOW,
+                                      generator=torch.Generator().manual_seed(meta["seed"])) * meta["scale"])
+    mean, cls = LP.build_model("mean", hub_state), LP.build_model("cls", hub_state)
+    with torch.no_grad():
+        assert np.allclose(mean(x, ch_names=list(LP.LABRAM_CH_NAMES)).numpy(), d["mean"], atol=1e-6)
+        assert np.allclose(cls(x, ch_names=list(LP.LABRAM_CH_NAMES)).numpy(), d["cls"], atol=1e-6)
 
 
 def test_official_name_map():

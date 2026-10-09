@@ -151,7 +151,7 @@ class QuadFusionMLP(nn.Module):
         padding_mask: torch.Tensor,
     ) -> torch.Tensor:
         """Encode EEG windows with chunking for memory efficiency."""
-        batch_size, num_windows, n_channels, n_times = windows.shape
+        batch_size, num_windows = windows.shape[:2]  # per-window shape: (channels, time) or (dim,)
 
         # Encode windows in chunks
         all_embeddings = []
@@ -160,7 +160,7 @@ class QuadFusionMLP(nn.Module):
             chunk_size = chunk.shape[1]
 
             # Flatten for encoding
-            chunk_flat = chunk.reshape(batch_size * chunk_size, n_channels, n_times)
+            chunk_flat = chunk.reshape(batch_size * chunk_size, *windows.shape[2:])
 
             # Encode
             chunk_emb = self.window_encoder(chunk_flat)
@@ -339,7 +339,7 @@ class QuadFusionMoE(nn.Module):
         Returns:
             Tuple of (logits, aux_loss)
         """
-        batch_size, num_windows, n_channels, n_times = eeg_windows.shape
+        batch_size, num_windows = eeg_windows.shape[:2]  # per-window shape: (channels, time) or (dim,)
 
         # Project clinical
         clinical_proj = self.clinical_proj(clinical)  # (batch, hidden_dim)
@@ -348,7 +348,7 @@ class QuadFusionMoE(nn.Module):
         text_proj = self.text_proj(text)  # (batch, hidden_dim)
 
         # Encode EEG windows
-        windows_flat = eeg_windows.reshape(batch_size * num_windows, n_channels, n_times)
+        windows_flat = eeg_windows.reshape(batch_size * num_windows, *eeg_windows.shape[2:])
         window_embeddings = self.encode_windows_chunked(windows_flat, self.window_chunk_size)
         embed_dim = window_embeddings.shape[-1]
         window_embeddings = window_embeddings.reshape(batch_size, num_windows, embed_dim)

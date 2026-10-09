@@ -48,6 +48,8 @@ BATCH_SIZE_BY_ENCODER = {
     "labram": 1,  # LaBraM is very memory-intensive
     "eegnet": 8,  # EEGNet is lightweight
     "eeg2vec": 8,  # Similar footprint to SimpleCNN
+    "labram_pretrained": 2,  # 12-layer LaBraM-base; sized for fine-tuning with gradients
+    "precomputed": 8,  # identity over stored features
 }
 
 # Encoder-specific window chunk sizes for memory efficiency
@@ -56,6 +58,8 @@ CHUNK_SIZE_BY_ENCODER = {
     "labram": 4,  # Process fewer windows at once for LaBraM
     "eegnet": 32,  # EEGNet is lightweight
     "eeg2vec": 32,  # Similar footprint to SimpleCNN
+    "labram_pretrained": 8,
+    "precomputed": 120,  # one pass over every window
 }
 
 # Encoder-specific window embedding size. Encoders not listed keep the fusion
@@ -63,6 +67,7 @@ CHUNK_SIZE_BY_ENCODER = {
 # pre-specified exp2_eeg2vec_chemberta_mlp row uses.
 EMBED_DIM_BY_ENCODER = {
     "eeg2vec": 256,
+    "labram_pretrained": 200,  # LaBraM-base embedding; "precomputed" takes the feature file's width
 }
 
 # Model configuration

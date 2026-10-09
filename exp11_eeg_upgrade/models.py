@@ -37,12 +37,12 @@ def _build_aggregator(aggregator_type, embed_dim, output_dim, num_heads=4, num_l
 
 def _encode_eeg_chunked(window_encoder, windows, padding_mask, chunk_size=32):
     """Encode EEG windows in chunks then aggregate. Shared by all models."""
-    batch_size, num_windows, n_channels, n_times = windows.shape
+    batch_size, num_windows = windows.shape[:2]  # per-window shape: (channels, time) or (dim,)
     all_embeddings = []
     for i in range(0, num_windows, chunk_size):
         chunk = windows[:, i:i + chunk_size]
         cs = chunk.shape[1]
-        chunk_flat = chunk.reshape(batch_size * cs, n_channels, n_times)
+        chunk_flat = chunk.reshape(batch_size * cs, *windows.shape[2:])
         chunk_emb = window_encoder(chunk_flat)
         chunk_emb = chunk_emb.reshape(batch_size, cs, -1)
         all_embeddings.append(chunk_emb)

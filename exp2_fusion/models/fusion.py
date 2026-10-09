@@ -112,10 +112,10 @@ class EEGSMILESMLPFusion(nn.Module):
         Returns:
             Logits of shape (batch, num_classes)
         """
-        batch_size, num_windows, n_channels, n_times = eeg_windows.shape
+        batch_size, num_windows = eeg_windows.shape[:2]  # per-window shape: (channels, time) or (dim,)
 
         # Encode EEG windows (in chunks to save memory)
-        windows_flat = eeg_windows.view(batch_size * num_windows, n_channels, n_times)
+        windows_flat = eeg_windows.reshape(batch_size * num_windows, *eeg_windows.shape[2:])
         window_embeddings = self.encode_windows_chunked(windows_flat, chunk_size=self.window_chunk_size)
         embed_dim = window_embeddings.shape[-1]
         window_embeddings = window_embeddings.view(batch_size, num_windows, embed_dim)
@@ -246,10 +246,10 @@ class EEGSMILESFuseMoE(nn.Module):
         Returns:
             Tuple of (logits, aux_loss)
         """
-        batch_size, num_windows, n_channels, n_times = eeg_windows.shape
+        batch_size, num_windows = eeg_windows.shape[:2]  # per-window shape: (channels, time) or (dim,)
 
         # Encode EEG windows (in chunks to save memory)
-        windows_flat = eeg_windows.view(batch_size * num_windows, n_channels, n_times)
+        windows_flat = eeg_windows.reshape(batch_size * num_windows, *eeg_windows.shape[2:])
         window_embeddings = self.encode_windows_chunked(windows_flat, chunk_size=self.window_chunk_size)
         embed_dim = window_embeddings.shape[-1]
         window_embeddings = window_embeddings.view(batch_size, num_windows, embed_dim)

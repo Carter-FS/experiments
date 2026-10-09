@@ -141,13 +141,13 @@ class AblationModel(nn.Module):
         Returns:
             Logits (batch, 2)
         """
-        batch_size, num_windows, n_channels, n_times = eeg_windows.shape
+        batch_size, num_windows = eeg_windows.shape[:2]  # per-window shape: (channels, time) or (dim,)
 
         # Encode windows in chunks
         window_embeddings = []
         for i in range(0, num_windows, self.window_chunk_size):
             chunk = eeg_windows[:, i:i+self.window_chunk_size]
-            chunk = chunk.reshape(-1, n_channels, n_times)
+            chunk = chunk.reshape(-1, *eeg_windows.shape[2:])
 
             if self.freeze_encoder:
                 with torch.no_grad():
