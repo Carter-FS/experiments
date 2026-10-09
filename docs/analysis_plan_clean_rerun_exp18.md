@@ -682,8 +682,9 @@ superseded; the paper's EEG statements are marked pending until the rerun.
   T3/T4/T5/T6 mapped to T7/T8/P7/P8); a recording missing any of them is skipped.
 - Units: the EDF physical dimension must be a voltage unit; data are stored in
   microvolts.
-- A leading flat segment (100-s chunks with SD below 0.01 microvolts on every
-  channel) is skipped before resampling, as in the supervisor's pipeline.
+- A leading flat segment (consecutive 100-s chunks whose standard deviation, pooled
+  over all channels and samples, is at most 0.01 microvolts) is skipped before
+  resampling, as in the supervisor's pipeline.
 - 200 Hz; 0.1-75 Hz zero-phase FIR; notch 50 Hz (Melbourne) or 60 Hz (HEP1);
   the first 300 s skipped, the next 1200 s used, recordings shorter than 600 s
   skipped; 10-s windows, at most 120, zero-padded with a mask.
@@ -699,7 +700,7 @@ Caches built on M3 on 2026-10-09 (`shared/eeg_cache.py` at commit 46cc3f5,
 | Cohort | EDF files | CSV patients with an EDF | Kept | Skipped | Leading flat segment | Median per-window SD (microvolts) | Full length (120 windows) | Fewest windows |
 |---|---|---|---|---|---|---|---|---|
 | Melbourne (Alfred) | 157 | 148 (9 files match no CSV patient) | 148 | 0 | 50 | 8.59 | 114 | 37 |
-| HEP1 | 98 | 96 (one patient with two files) | 95 | 1 (shorter than 600 s) | 0 | 2.89 | 86 | 90 |
+| HEP1 | 98 | 96 (one patient with three files, the first kept) | 95 | 1 (shorter than 600 s) | 0 | 2.89 | 86 | 90 |
 
 Frozen cohorts for the rerun: Melbourne EEG cohort 148 patients (72 with outcome 1
 and 76 with outcome 0 under the B.1 coding), of whom 108 also have a usable EEG report
