@@ -204,3 +204,14 @@ def test_stale_markers_lists_eeg_markers_older_than_the_cache(tmp_path):
     assert names == ["exp5_s42.done", "exp9_encoder_eeg2vec_s42.done", "hep_eeg_s42.done"]   # not exp4
     run(["archive-eeg"], OUT=out, ASM_ANALYSIS_OUTPUT_DIR=thesis)
     assert run(["stale-markers"], OUT=out).stdout.strip() == ""
+
+
+def test_stale_outputs_lists_eeg_files_older_than_the_cache(tmp_path):
+    out, thesis, eeg, keep, guard = _eeg_tree(tmp_path)
+    env = {"OUT": out, "ASM_ANALYSIS_OUTPUT_DIR": thesis}
+    listed = set(run(["stale-outputs"], **env).stdout.split())
+    files = [str(f) for f in eeg if not f.name.endswith(".done")]
+    assert listed == set(files), listed ^ set(files)
+    assert not any(str(f) in listed for f in keep)
+    run(["archive-eeg"], **env)
+    assert run(["stale-outputs"], **env).stdout.strip() == ""

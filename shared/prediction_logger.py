@@ -83,7 +83,9 @@ def run_provenance() -> dict:
 
 def protocol_metadata(inner_val: float) -> dict:
     """Selection protocol of the active run ('legacy' / 'innersplit' / 'refit'),
-    so consumers need not infer it from the filename."""
+    so consumers need not infer it from the filename, plus ``eeg_inputs``: every
+    EEG cache and stored feature file the process has loaded so far (version, build
+    time, commit), which the verify gate requires for EEG-dependent files."""
     from shared.cv_splits import protocol_name, refit_folds, smoke
     from shared.eeg_cache import LOADED_INPUTS
 

@@ -769,4 +769,9 @@ coding). `shared/verify_oof.py` requires these counts.
   of the data with the smoke mode (`--smoke`: one outer fold, two inner folds, two
   epochs, outputs tagged `_smoke` and never read as results) before submission.
 - `shared/verify_oof.py` and the expected-file manifest name the new arms and files
-  and the counts of C.2.
+  and the counts of C.2. Every prediction file records the EEG caches and feature
+  files its process loaded (version, build time, commit); the gate rejects an
+  EEG-dependent file whose inputs are not all from the version-2 cache. exp18's and
+  the HEP scripts' CSV outputs, which the gate does not read, are covered by the
+  preflight checks that no EEG-dependent output or done marker predates the
+  version-2 cache.

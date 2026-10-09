@@ -45,6 +45,7 @@ from shared.cv_splits import (
 from shared.determinism import enable_determinism
 from shared.epoch_selection import refit_protocol
 from shared.hep_cohort import HEP_OUTCOMES, hep_outcome_tag
+from shared.eeg_cache import LOADED_INPUTS
 from shared.prediction_logger import run_provenance
 
 from .config import (
@@ -281,6 +282,7 @@ def main() -> None:
                 "protocol": "refit" if args.refit_folds else "innersplit", "refit_folds": args.refit_folds,
                 "inner_frac": 0.0 if args.refit_folds else INNER_FRAC,
                 "provenance": {**run_provenance(), "cv_seed": seed},
+                "eeg_inputs": [dict(e) for e in LOADED_INPUTS],   # the caches this process loaded (version, build time, commit)
             }, indent=2))
             logger.info(f"wrote predictions_{stem}.csv ({len(preds)} rows)")
 

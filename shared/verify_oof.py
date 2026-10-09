@@ -52,8 +52,11 @@ EXPECTED_COUNTS = [
 N_FOLDS = 5
 
 # Files that depend on the EEG cache must carry version-2 provenance in their metadata
-# (``eeg_inputs`` from shared.prediction_logger.protocol_metadata); a file from a run
-# on the superseded cache has none (Addendum C).
+# (``eeg_inputs`` from shared.prediction_logger.protocol_metadata, every cache and
+# feature file the process loaded); a file from a run on the superseded cache has none
+# (Addendum C). exp18's CSV/JSON outputs and the HEP thesis CSVs are not read here;
+# they are guarded by `rerun_clean.sh preflight` (stale-outputs, stale-markers) and
+# `archive-eeg`.
 EEG_FILE_RE = re.compile(r"^(exp(2|3|7|9|11|15|16|17)_predictions/|exp5_predictions/predictions_oof_exp5c_|exp6_predictions/predictions_oof_exp6b_)")
 
 
@@ -64,9 +67,8 @@ def eeg_provenance_problem(rel: str, payload: dict) -> str | None:
     inputs = (payload.get("metadata") or {}).get("eeg_inputs")
     if not inputs:
         return "no eeg_inputs provenance in metadata (an output of the superseded EEG cache?)"
-    ok = any(e.get("version") == 2 for e in inputs if e.get("kind") == "cache") or \
-        any(e.get("source_cache_version") == 2 for e in inputs if e.get("kind") == "features")
-    return None if ok else "eeg_inputs name no version-2 cache or feature file"
+    bad = [e for e in inputs if (e.get("version") if e.get("kind") == "cache" else e.get("source_cache_version")) != 2]
+    return None if not bad else f"{len(bad)} loaded EEG input(s) are not from the version-2 cache"
 
 
 def load_json_nul_tolerant(path: Path) -> dict:

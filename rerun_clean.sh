@@ -280,6 +280,7 @@ preflight () {
     check "REVE and LaBraM features v2, HEP1 (written from the HEP1 cache; same producers)" \
         "'$PY' -m shared.eeg_features check --feature-set reve_v2 labram_v2 --cohort hep > /dev/null"
     check "no EEG done marker predates the version-2 cache (run archive-eeg first)" "[[ -z \"\$(stale_eeg_markers)\" ]]"
+    check "no EEG-dependent output predates the version-2 cache (run archive-eeg first)" "[[ -z \"\$(stale_eeg_outputs)\" ]]"
     check "logs/ directory (slurm opens its log files before the job starts)" "mkdir -p logs"
     if [[ -f "$EXP18_DUPLICATES" ]]; then
         echo "note    exp18 will exclude $(grep -c . "$EXP18_DUPLICATES") confirmed duplicate HEP1 pid(s)"
@@ -401,8 +402,44 @@ archive_iv20 () {
 # checkout shows their deletions until then. Timestamped summaries that nothing reads
 # (exp5/exp6/exp10/exp12/exp13/exp14_results, exp15_smoke) stay. DRY_RUN=1 lists.
 THESIS_KEEP_RE='^(hep_external_(summary|predictions|oov_breakdown)(\.csv|_sp-)|hep_external_exp19_|hep_reverse_|hep_focal_external_|metrics_decomposition|eeg_report_keywords|asm_first_prescription_counts|\.gitkeep$)'
+
+# Every file that depends on the EEG cache: the families archive-eeg moves, NUL-separated.
+eeg_output_candidates () {
+    local out="${OUT%/}" thesis_out="${ASM_ANALYSIS_OUTPUT_DIR:-$THESIS/analysis/output}" d f
+    thesis_out="${thesis_out%/}"
+    # prediction and summary directories whose every file depends on EEG
+    for d in exp2_predictions exp3_predictions exp7_predictions exp9_predictions exp11_predictions \
+             exp15_predictions exp16_predictions exp17_predictions \
+             exp2_results exp3_results exp7_results exp9_results exp11_results exp15_reve_quad; do
+        [[ -d "$out/$d" ]] && find -L "$out/$d" -type f -print0
+    done
+    # the EEG rows of exp5 and exp6
+    [[ -d "$out/exp5_predictions" ]] && find -L "$out/exp5_predictions" -maxdepth 1 -type f -name 'predictions_oof_exp5c_*' -print0
+    [[ -d "$out/exp6_predictions" ]] && find -L "$out/exp6_predictions" -maxdepth 1 -type f -name 'predictions_oof_exp6b_*' -print0
+    # exp18: the EEG configurations and the aggregates that mix their rows in
+    [[ -d "$out/exp18_mixed_cohort" ]] && find -L "$out/exp18_mixed_cohort" -maxdepth 1 -type f \
+        \( -name '*Exp5c*' -o -name '*Exp6b*' -o -name '*Exp7a*' -o -name 'summary.csv' -o -name 'per_seed.csv' -o -name 'tests.csv' \) -print0
+    # the defective caches and the version-1 REVE features
+    [[ -d "$out/eeg_cache" ]] && find -L "$out/eeg_cache" -maxdepth 1 -type f -name 'processed_eeg*' -print0
+    find -L "$out" -maxdepth 1 -type f \( -name 'reve_features_alfred*' -o -name 'reve_features_hep*' \) -print0
+    # thesis analysis outputs: everything except the non-EEG per-seed outputs and the text files
+    if [[ -d "$thesis_out" ]]; then
+        while IFS= read -r -d '' f; do
+            grep -qE "$THESIS_KEEP_RE" <<< "${f##*/}" || printf '%s\0' "$f"
+        done < <(find -L "$thesis_out" -maxdepth 1 -type f -print0)
+    fi
+}
+
+# EEG-dependent output files older than the version-2 Melbourne cache sidecar (one per
+# line): results of the superseded cache that archive-eeg has not set aside.
+stale_eeg_outputs () {
+    local guard="${OUT%/}/eeg_cache/eeg19_v2_alfred.pkl.meta.json" f
+    [[ -f "$guard" ]] || { echo "$guard missing"; return; }
+    while IFS= read -r -d '' f; do [[ "$f" -ot "$guard" ]] && echo "$f"; done < <(eeg_output_candidates)
+}
+
 archive_eeg () {
-    local out="${OUT%/}" dest guard thesis_out dry=0 n=0 f t p d rel add_rel i
+    local out="${OUT%/}" dest guard thesis_out dry=0 n=0 f t p rel add_rel i
     dest="$out/_archive_eeg_defect_20261009"; guard="$out/eeg_cache/eeg19_v2_alfred.pkl.meta.json"
     thesis_out="${ASM_ANALYSIS_OUTPUT_DIR:-$THESIS/analysis/output}"; thesis_out="${thesis_out%/}"
     [[ "${DRY_RUN:-0}" == 1 ]] && dry=1
@@ -414,38 +451,12 @@ archive_eeg () {
     fi
     # an archive directory without the stamp is an interrupted run: resume it
     local -a src=() rel_dest=() newer=()
+    rel_of () { case "$1" in "$thesis_out"/*) echo "thesis_output/${1##*/}" ;; *) echo "${1#"$out"/}" ;; esac; }
     add () {  # $1 file, $2 destination relative to the archive
         if [[ "$1" -nt "$guard" ]]; then newer+=("$1"); return; fi
         src+=("$1"); rel_dest+=("$2")
     }
-    collect () {  # $1 destination prefix ("" keeps the path relative to $out); $2 directory; then find arguments
-        local prefix="$1" dir="$2"; shift 2
-        [[ -d "$dir" ]] || return 0
-        while IFS= read -r -d '' f; do
-            if [[ -n "$prefix" ]]; then add "$f" "$prefix/${f##*/}"; else add "$f" "${f#"$out"/}"; fi
-        done < <(find -L "$dir" "$@" -type f -print0)
-    }
-    # prediction and summary directories whose every file depends on EEG
-    for d in exp2_predictions exp3_predictions exp7_predictions exp9_predictions exp11_predictions \
-             exp15_predictions exp16_predictions exp17_predictions \
-             exp2_results exp3_results exp7_results exp9_results exp11_results exp15_reve_quad; do
-        collect "" "$out/$d"
-    done
-    # the EEG rows of exp5 and exp6
-    collect "" "$out/exp5_predictions" -maxdepth 1 -name 'predictions_oof_exp5c_*'
-    collect "" "$out/exp6_predictions" -maxdepth 1 -name 'predictions_oof_exp6b_*'
-    # exp18: the EEG configurations and the aggregates that mix their rows in
-    collect "" "$out/exp18_mixed_cohort" -maxdepth 1 \
-        \( -name '*Exp5c*' -o -name '*Exp6b*' -o -name '*Exp7a*' -o -name 'summary.csv' -o -name 'per_seed.csv' -o -name 'tests.csv' \)
-    # the defective caches and the version-1 REVE features
-    collect "" "$out/eeg_cache" -maxdepth 1 -name 'processed_eeg*'
-    collect "" "$out" -maxdepth 1 \( -name 'reve_features_alfred*' -o -name 'reve_features_hep*' \)
-    # thesis analysis outputs: everything except the non-EEG per-seed outputs and the text files
-    if [[ -d "$thesis_out" ]]; then
-        while IFS= read -r -d '' f; do
-            grep -qE "$THESIS_KEEP_RE" <<< "${f##*/}" || add "$f" "thesis_output/${f##*/}"
-        done < <(find -L "$thesis_out" -maxdepth 1 -type f -print0)
-    fi
+    while IFS= read -r -d '' f; do add "$f" "$(rel_of "$f")"; done < <(eeg_output_candidates)
     # done markers of every EEG task, under both protocols
     for p in refit innersplit; do
         [[ -d "$out/_clean_rerun_v2/$p" ]] || continue
@@ -457,10 +468,7 @@ archive_eeg () {
     done
     if [[ ${#newer[@]} -gt 0 ]]; then
         if [[ "${ALLOW_NEWER:-0}" == 1 ]]; then
-            for f in "${newer[@]}"; do
-                case "$f" in "$thesis_out"/*) add_rel="thesis_output/${f##*/}" ;; *) add_rel="${f#"$out"/}" ;; esac
-                src+=("$f"); rel_dest+=("$add_rel")
-            done
+            for f in "${newer[@]}"; do src+=("$f"); rel_dest+=("$(rel_of "$f")"); done
         else
             echo "archive-eeg: ${#newer[@]} EEG-dependent file(s) are newer than $guard and were not archived" >&2
             printf '  %s\n' "${newer[@]}" >&2
@@ -546,6 +554,7 @@ case "${1:-}" in
     archive-eeg) archive_eeg ;;
     pending-array) pending_array items ;;
     stale-markers) stale_eeg_markers ;;
+    stale-outputs) stale_eeg_outputs ;;
     pending-array-cpu) pending_array items_cpu ;;
     smoke)
         # An end-to-end dry run of one task on this host's data: first outer fold,
@@ -581,7 +590,7 @@ case "${1:-}" in
         echo "== smoke $task (every output under $SMOKE_OUT) =="
         run_task "$task" 42; rc=$?
         exit $rc ;;
-    "") echo "usage: [PROTOCOL=refit|innersplit] bash rerun_clean.sh {preflight|list|list-cpu|verify|archive-iv20|archive-eeg|stale-markers|pending-array|pending-array-cpu|smoke <task>|<task>:<seed>}" >&2; exit 2 ;;
+    "") echo "usage: [PROTOCOL=refit|innersplit] bash rerun_clean.sh {preflight|list|list-cpu|verify|archive-iv20|archive-eeg|stale-markers|stale-outputs|pending-array|pending-array-cpu|smoke <task>|<task>:<seed>}" >&2; exit 2 ;;
     *:*)
         task="${1%%:*}"; seed="${1##*:}"
         marker="$DONE/${task}_s${seed}.done"

@@ -101,7 +101,9 @@ def test_verify_gate_requires_version2_provenance_on_eeg_files():
     eeg = "exp9_predictions/predictions_oof_exp9_encoder_eegnet_sp-multilabel_rf5_s42.json"
     assert v.eeg_provenance_problem(eeg, with_cache) is None and v.eeg_provenance_problem(eeg, with_features) is None
     assert "superseded" in v.eeg_provenance_problem(eeg, none)
-    assert "no version-2" in v.eeg_provenance_problem(eeg, legacy)
+    assert "not from the version-2 cache" in v.eeg_provenance_problem(eeg, legacy)
+    mixed = {"metadata": {"eeg_inputs": [{"kind": "cache", "version": 2}, {"kind": "cache", "version": "legacy"}]}}
+    assert "1 loaded EEG input" in v.eeg_provenance_problem(eeg, mixed)
     assert v.eeg_provenance_problem("exp5_predictions/predictions_oof_exp5c_eeg2vec_sp-multilabel_rf5_s42.json", none)
     assert v.eeg_provenance_problem("exp6_predictions/predictions_oof_exp6b_simplecnn_sp-multilabel_rf5_s42.json", none)
     for non_eeg in ("exp4_predictions/predictions_oof_exp4a_mlp_s42.json", "exp5_predictions/predictions_oof_exp5a_chemberta_s42.json",
