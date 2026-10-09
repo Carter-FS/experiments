@@ -82,12 +82,27 @@ def test_temporal_channels_use_the_legacy_tuh_embeddings():
     assert not {"T7", "T8", "P7", "P8"} & {n.upper() for n in LP.LABRAM_CH_NAMES}
 
 
-def test_channel_names_select_the_embeddings(hub_state):
+def test_canonical_list_matches_the_official_standard_1020():
+    canonical = LP.canonical_channel_list()
+    assert len(canonical) == 128 and canonical[:3] == ["FP1", "FPZ", "FP2"] and canonical[88:92] == ["T3", "T5", "T4", "T6"]
+
+
+def test_forward_uses_the_exported_embedding_rows(hub_state):
     model = LP.build_model("mean", hub_state)
     x = torch.randn(2, LP.N_CHANNELS, LP.SAMPLES_PER_WINDOW, generator=torch.Generator().manual_seed(1)) * 0.3
+    seen = {}
+    original = model.forward_features
+
+    def spy(inp, input_chans, **kwargs):
+        seen["rows"] = input_chans.tolist()
+        return original(inp, input_chans=input_chans, **kwargs)
+
+    model.forward_features = spy
     with torch.no_grad():
         a = model(x, ch_names=list(LP.LABRAM_CH_NAMES))
+        rows = seen["rows"]
         b = model(x, ch_names=list(reversed(LP.LABRAM_CH_NAMES)))
+    assert rows == LP.input_chans() and rows[0] == 0 and rows[1 + list(C.CH_NAMES).index("T7")] == 89
     assert not torch.allclose(a, b)
 
 
@@ -124,7 +139,8 @@ def test_extract_features_layout_and_determinism(tmp_path, hub_state):
     assert np.isfinite(f).all() and not f[0, 5:].any() and not f[1].any() and f[2, :3].all()
     assert meta["n_recordings"] == 3 and meta["n_recordings_without_windows"] == 1
     assert meta["embed_dim"] == LP.EMBED_DIM and meta["input_convention"] == "labram"
-    assert meta["source_cache_meta"]["version"] == C.CACHE_VERSION and "n_recordings" not in meta["source_cache_meta"]
+    assert meta["source_cache_meta"]["version"] == C.CACHE_VERSION and meta["source_cache_meta"]["n_recordings"] == 3
+    assert meta["braindecode_version"] and meta["torch_version"]
     stored = json.loads(d["meta"].item())
     assert stored["hub_revision"] == LP.HUB_REVISION and stored["labram_ch_names"] == list(LP.LABRAM_CH_NAMES)
     # the stored feature equals a direct forward on the labram-convention windows
@@ -167,6 +183,7 @@ def test_export_weights_round_trip(tmp_path, hub_state):
     assert saved["hub_revision"] == LP.HUB_REVISION and saved["n_patches"] == LP.N_PATCHES
     assert saved["model_kwargs"]["n_chans"] == 19 and saved["model_kwargs"]["n_times"] == 2000
     assert saved["model_kwargs"] == LP.MODEL_KWARGS and saved["input_convention"] == "labram"
+    assert saved["braindecode_version"] and saved["input_chans"] == LP.input_chans()
     assert saved["labram_ch_names"] == list(LP.LABRAM_CH_NAMES) and saved["cache_ch_names"] == list(C.CH_NAMES)
     assert saved["state_dict"]["temporal_embedding"].shape == (1, LP.N_PATCHES + 1, LP.EMBED_DIM)
     assert set(saved["state_dict"]) == set(hub_state)
@@ -221,3 +238,12 @@ def test_hub_weights_match_the_official_checkpoint(hub_state):
     renamed["blocks.0.attn.extra.weight"] = renamed.pop("blocks.0.attn.proj.weight")
     with pytest.raises(RuntimeError, match="no official counterpart"):
         LP.verify_against_official(LP.OFFICIAL_CHECKPOINT_PATH, renamed)
+    # a hub state missing an encoder tensor leaves an official encoder tensor unmatched
+    short = {k: v for k, v in hub_state.items() if k != "blocks.0.attn.proj.weight"}
+    with pytest.raises(RuntimeError, match="no hub counterpart"):
+        LP.verify_against_official(LP.OFFICIAL_CHECKPOINT_PATH, short)
+    # a dtype change is rejected even when the values round-trip
+    halved = dict(hub_state)
+    halved["cls_token"] = hub_state["cls_token"].half()
+    with pytest.raises(RuntimeError, match="differ from the official checkpoint"):
+        LP.verify_against_official(LP.OFFICIAL_CHECKPOINT_PATH, halved)

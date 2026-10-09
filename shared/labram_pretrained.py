@@ -35,6 +35,7 @@ import json
 import logging
 import os
 import re
+import warnings
 from pathlib import Path
 from typing import Dict, Optional, Sequence, Tuple
 
@@ -64,8 +65,8 @@ EXPECTED_N_PARAMS = 5_818_936
 # indices 88-91) and the modern ones (T7/T8/P7/P8, indices 37/45/59/67). The official
 # clinical fine-tuning runs (TUAB and TUEV in run_class_finetuning.py) name the TUH
 # channels T3/T4/T5/T6, so those embeddings are used for routine clinical EEG here.
-# Names are matched case-insensitively against braindecode's canonical list, whose
-# order equals the official ``standard_1020`` list position for position.
+# Names are matched case-insensitively against braindecode's canonical list, whose 128
+# entries equal the first 128 of the official ``standard_1020`` list position for position.
 CACHE_TO_LABRAM_NAME = {"T7": "T3", "T8": "T4", "P7": "T5", "P8": "T6"}
 LABRAM_CH_NAMES: Tuple[str, ...] = tuple(CACHE_TO_LABRAM_NAME.get(c, c) for c in CH_NAMES)
 
@@ -81,6 +82,10 @@ MODEL_KWARGS = {
 # Official checkpoint tensors that belong to pretraining only (tokenizer targets and the
 # symmetric-masking projection); every other official tensor must match a hub tensor.
 OFFICIAL_PRETRAINING_ONLY = ("lm_head.", "logit_scale", "projection_head.", "student.lm_head.", "student.mask_token")
+# sha256 of the first 128 names of the official ``standard_1020`` list (utils.py), upper
+# case and comma-joined; the 129-row position embedding never reaches the 8 bipolar names
+# that follow them. braindecode's canonical list must hash to the same value.
+OFFICIAL_CANONICAL_128_SHA256 = "25c40292a1bcf0cd7ffafa4d57261a06a0f06214726ee8c63025a057787949e1"
 
 OUT_DIR = EXPERIMENTS_ROOT / "outputs"
 FEATURE_PATHS = {"alfred": OUT_DIR / "labram_features_v2_alfred.npz", "hep": OUT_DIR / "labram_features_v2_hep.npz"}
@@ -134,8 +139,12 @@ def build_model(pooling: str, state: Optional[Dict[str, torch.Tensor]] = None):
     if pooling not in ("mean", "cls"):
         raise ValueError(f"pooling must be 'mean' or 'cls', not {pooling!r}")
     state = adapt_state_dict(hub_state_dict() if state is None else state)
-    model = Labram(**MODEL_KWARGS, use_mean_pooling=(pooling == "mean"),
-                   chs_info=[{"ch_name": c} for c in LABRAM_CH_NAMES])
+    with warnings.catch_warnings():
+        # braindecode notes that 19 channels are not its 128-channel layout; the
+        # channel names are passed to every forward call, which is the supported path
+        warnings.filterwarnings("ignore", message="Labram chs_info does not match")
+        model = Labram(**MODEL_KWARGS, use_mean_pooling=(pooling == "mean"),
+                       chs_info=[{"ch_name": c} for c in LABRAM_CH_NAMES])
     missing, unexpected = model.load_state_dict(state, strict=False)
     allowed_missing = {"fc_norm.weight", "fc_norm.bias"} if pooling == "mean" else set()
     allowed_unexpected = {"norm.weight", "norm.bias"} if pooling == "mean" else set()
@@ -164,21 +173,31 @@ def window_features(model, windows: torch.Tensor, batch_size: int = 64) -> torch
     return torch.cat(out) if out else torch.zeros((0, EMBED_DIM))
 
 
-def input_chans() -> list:
-    """Rows of the pretrained position embedding for ``LABRAM_CH_NAMES``: the official
-    ``utils.get_input_chans`` convention (0 for [CLS], then index in ``standard_1020`` + 1),
-    taken from braindecode's canonical list, which equals ``standard_1020`` position for
-    position."""
+def canonical_channel_list() -> list:
+    """braindecode's canonical channel list, checked against the first 128 names of the
+    official ``standard_1020`` list by hash."""
     from braindecode.models.labram import LABRAM_CHANNEL_ORDER
 
     canonical = [n.upper() for n in LABRAM_CHANNEL_ORDER]
+    digest = hashlib.sha256(",".join(canonical).encode()).hexdigest()
+    if digest != OFFICIAL_CANONICAL_128_SHA256:
+        raise RuntimeError("braindecode's LABRAM_CHANNEL_ORDER differs from the official standard_1020 list")
+    return canonical
+
+
+def input_chans() -> list:
+    """Rows of the pretrained position embedding for ``LABRAM_CH_NAMES``: the official
+    ``utils.get_input_chans`` convention (0 for [CLS], then index in ``standard_1020`` + 1),
+    which braindecode's ``forward(ch_names=...)`` applies to its canonical list."""
+    canonical = canonical_channel_list()
     return [0] + [canonical.index(n.upper()) + 1 for n in LABRAM_CH_NAMES]
 
 
 def _source_cache_provenance(cache_path: Path) -> dict:
     """Version, cohort, counts and build time of the cache the features come from."""
     info = cache_info(cache_path)
-    keep = ("version", "cohort", "n_channels", "ch_names", "sfreq", "built_at", "n_edf_files", "n_skipped", "skipped")
+    keep = ("version", "cohort", "n_recordings", "n_channels", "ch_names", "sfreq", "built_at",
+            "n_edf_files", "n_skipped", "skipped")
     return {k: info[k] for k in keep if k in info}
 
 
@@ -189,8 +208,14 @@ def extract_features(cache_path: Path, out_path: Path, device: str = "cpu", batc
     Recordings are processed in sorted pid order; the feature rows follow ``pids``.
     """
     cache_path, out_path = Path(cache_path), Path(out_path)
+    import braindecode
+
     eeg = load_cache(cache_path, INPUT_CONVENTION)
     pids = sorted(eeg)
+    provenance = _source_cache_provenance(cache_path)
+    if provenance.get("n_recordings", len(pids)) != len(pids):
+        raise RuntimeError(f"{cache_path.name} metadata lists {provenance['n_recordings']} recordings, loaded {len(pids)}")
+    state = hub_state_dict() if state is None else state
     model_mean = build_model("mean", state).to(device)
     model_cls = build_model("cls", state).to(device)
     features = np.zeros((len(pids), MAX_WINDOWS, EMBED_DIM), dtype=np.float32)
@@ -216,11 +241,12 @@ def extract_features(cache_path: Path, out_path: Path, device: str = "cpu", batc
     with_windows = valid_counts > 0
     norms = [np.linalg.norm(features[i, : valid_counts[i]], axis=-1).mean() for i in np.flatnonzero(with_windows)]
     meta = {
-        "source_cache": cache_path.name, "source_cache_meta": _source_cache_provenance(cache_path),
+        "source_cache": cache_path.name, "source_cache_meta": provenance,
         "n_recordings": len(pids), "n_recordings_without_windows": int((~with_windows).sum()),
         "embed_dim": EMBED_DIM, "max_windows": MAX_WINDOWS, "n_patches": N_PATCHES,
         "input_convention": INPUT_CONVENTION, "cache_ch_names": list(CH_NAMES), "labram_ch_names": list(LABRAM_CH_NAMES),
         "hub_repo": HUB_REPO, "hub_revision": HUB_REVISION, "hub_safetensors_sha256": HUB_SAFETENSORS_SHA256,
+        "braindecode_version": braindecode.__version__, "torch_version": torch.__version__,
         "pooling": {"features": "mean over patch tokens + parameter-free LayerNorm", "features_cls": "[CLS] token"},
         "device": device, "dtype": "float32", "built_at": t0.isoformat(timespec="seconds"),
         "elapsed_s": round((_dt.datetime.now() - t0).total_seconds(), 1),
@@ -266,7 +292,8 @@ def verify_against_official(checkpoint: Path = OFFICIAL_CHECKPOINT_PATH,
     if len(set(mapping.values())) != len(mapping):
         raise RuntimeError("hub-to-official name mapping is not one to one")
     different = sorted(k for k, o in mapping.items()
-                       if state[k].shape != official[o].shape or not torch.equal(state[k].float(), official[o].float()))
+                       if state[k].shape != official[o].shape or state[k].dtype != official[o].dtype
+                       or not torch.equal(state[k], official[o]))
     if different:
         raise RuntimeError(f"{len(different)} hub tensors differ from the official checkpoint: {different[:5]}")
     unused = sorted(set(official) - set(mapping.values()))
@@ -279,11 +306,15 @@ def verify_against_official(checkpoint: Path = OFFICIAL_CHECKPOINT_PATH,
 def export_weights(out_path: Path = WEIGHTS_19CH_PATH, state: Optional[Dict[str, torch.Tensor]] = None) -> Path:
     """The adapted 19-channel state dict plus the constructor arguments, embedding rows
     and pooling conventions a vendored copy of the architecture needs."""
+    import braindecode
+
     adapted = adapt_state_dict(hub_state_dict() if state is None else state)
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save({
         "state_dict": adapted, "hub_repo": HUB_REPO, "hub_revision": HUB_REVISION,
+        # the key names and constructor arguments are this braindecode version's Labram
+        "braindecode_version": braindecode.__version__,
         "hub_safetensors_sha256": HUB_SAFETENSORS_SHA256, "n_patches": N_PATCHES,
         "model_kwargs": dict(MODEL_KWARGS), "input_chans": input_chans(),
         "cache_ch_names": list(CH_NAMES), "labram_ch_names": list(LABRAM_CH_NAMES),
