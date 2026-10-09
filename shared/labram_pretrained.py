@@ -1,0 +1,272 @@
+"""Pretrained LaBraM-base as a frozen per-window EEG feature extractor.
+
+Runs in ``.venv-reve`` (braindecode with Hugging Face Hub support). The weights are
+``braindecode/labram-pretrained`` at a pinned snapshot, verified by file hash and,
+optionally, tensor for tensor against the official ``labram-base.pth``.
+
+    python -m shared.labram_pretrained extract --cohort alfred         # outputs/labram_features_v2_alfred.npz
+    python -m shared.labram_pretrained extract --cohort hep
+    python -m shared.labram_pretrained verify-official [CHECKPOINT]    # default outputs/labram/labram-base.pth
+    python -m shared.labram_pretrained export-weights                  # outputs/labram_base_19ch.pt
+
+Input convention: the version-2 EEG cache loaded with ``convention="labram"``
+(microvolts divided by 100, as in the official ``engine_for_finetuning.py``), 19 standard
+10-20 channels whose embeddings the model selects by name (the four temporal channels
+under their legacy TUH names T3/T4/T5/T6, as in the official clinical fine-tuning),
+10-second windows at 200 Hz (ten 1-second patches). Two features per window, both
+200-dimensional and computed in fp32 with no dropout:
+
+- ``features`` (primary): the mean over the 190 patch tokens of the last block followed
+  by a parameter-free LayerNorm, which is ``use_mean_pooling=True`` with a freshly
+  initialised ``fc_norm``, the official fine-tuning default.
+- ``features_cls``: the ``[CLS]`` token after the pretrained final LayerNorm
+  (``use_mean_pooling=False``).
+
+The npz layout matches the REVE features used by exp15: ``features (n, 120, 200)``,
+``features_cls``, ``pids``, ``valid_window_counts``, plus a JSON ``meta`` field that is
+also written beside the npz as ``<name>.npz.meta.json``. Padded windows hold zeros.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as _dt
+import hashlib
+import json
+import logging
+import os
+from pathlib import Path
+from typing import Dict, Optional, Sequence, Tuple
+
+import numpy as np
+import torch
+
+from exp2_fusion.config import MAX_WINDOWS
+from shared.eeg_cache import CACHE_PATHS, CH_NAMES, N_CHANNELS, SAMPLES_PER_WINDOW, TARGET_SFREQ, cache_info, load_cache
+from shared.paths import EXPERIMENTS_ROOT
+
+logger = logging.getLogger(__name__)
+
+HUB_REPO = "braindecode/labram-pretrained"
+HUB_REVISION = "0563b6c626e7b40d9a36653b763715db94d945d7"
+HUB_SAFETENSORS_SHA256 = "53b752edb366fd6395dd3cb7d63ae3e1e16aabed040aa0901d64ef32e8f444f8"
+OFFICIAL_CHECKPOINT_SHA256 = "7c50583826afac76c4ab18f43d958df40496c8229accc09ed6a227c9bb57c37c"
+OFFICIAL_URL = "https://raw.githubusercontent.com/935963004/LaBraM/main/checkpoints/labram-base.pth"
+EMBED_DIM = 200
+PATCH_SIZE = 200
+N_PATCHES = SAMPLES_PER_WINDOW // PATCH_SIZE
+INPUT_CONVENTION = "labram"
+# LaBraM-base without a classification head: the hub snapshot holds 5,819,936 parameters
+# with a 16-row temporal embedding; sliced to 10 patches + [CLS] it is 1,000 fewer.
+EXPECTED_N_PARAMS = 5_818_936
+# Channel names given to the model. The cache stores the modern 10-20 names; LaBraM
+# keeps separate embeddings for the legacy temporal names (T3/T4/T5/T6, canonical
+# indices 88-91) and the modern ones (T7/T8/P7/P8, indices 37/45/59/67). The official
+# clinical fine-tuning runs (TUAB and TUEV in run_class_finetuning.py) name the TUH
+# channels T3/T4/T5/T6, so those embeddings are used for routine clinical EEG here.
+# Names are matched case-insensitively against braindecode's canonical list, whose
+# order equals the official ``standard_1020`` list position for position.
+CACHE_TO_LABRAM_NAME = {"T7": "T3", "T8": "T4", "P7": "T5", "P8": "T6"}
+LABRAM_CH_NAMES: Tuple[str, ...] = tuple(CACHE_TO_LABRAM_NAME.get(c, c) for c in CH_NAMES)
+
+OUT_DIR = EXPERIMENTS_ROOT / "outputs"
+FEATURE_PATHS = {"alfred": OUT_DIR / "labram_features_v2_alfred.npz", "hep": OUT_DIR / "labram_features_v2_hep.npz"}
+WEIGHTS_19CH_PATH = OUT_DIR / "labram_base_19ch.pt"
+# The official checkpoint is kept outside git (outputs/ is ignored); override with
+# $LABRAM_OFFICIAL_CHECKPOINT.
+OFFICIAL_CHECKPOINT_PATH = Path(os.environ.get("LABRAM_OFFICIAL_CHECKPOINT") or OUT_DIR / "labram" / "labram-base.pth")
+
+
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def hub_state_dict() -> Dict[str, torch.Tensor]:
+    """The pinned hub weights, after checking the safetensors file hash."""
+    from braindecode.models import Labram
+    from huggingface_hub import hf_hub_download
+
+    weights = Path(hf_hub_download(HUB_REPO, "model.safetensors", revision=HUB_REVISION))
+    digest = _sha256(weights)
+    if digest != HUB_SAFETENSORS_SHA256:
+        raise RuntimeError(f"{weights} has sha256 {digest}, expected {HUB_SAFETENSORS_SHA256}")
+    model = Labram.from_pretrained(HUB_REPO, revision=HUB_REVISION)
+    return {k: v.detach().clone() for k, v in model.state_dict().items()}
+
+
+def adapt_state_dict(state: Dict[str, torch.Tensor], n_patches: int = N_PATCHES) -> Dict[str, torch.Tensor]:
+    """Slice the temporal embedding to ``n_patches + 1`` rows (the official code indexes
+    ``time_embed[:, 0:n_patches]``); every other tensor is unchanged."""
+    out = dict(state)
+    te = out["temporal_embedding"]
+    if te.shape[1] < n_patches + 1:
+        raise ValueError(f"temporal embedding has {te.shape[1]} rows, need {n_patches + 1}")
+    out["temporal_embedding"] = te[:, : n_patches + 1, :].clone()
+    return out
+
+
+def build_model(pooling: str, state: Optional[Dict[str, torch.Tensor]] = None):
+    """A 19-channel LaBraM-base with the pretrained weights and no classification head.
+
+    ``pooling="mean"``: mean over patch tokens through a fresh LayerNorm (the official
+    fine-tuning default). ``pooling="cls"``: the [CLS] token after the pretrained norm.
+    Every pretrained tensor must load; only the pooling-specific LayerNorm may differ.
+    """
+    from braindecode.models import Labram
+
+    if pooling not in ("mean", "cls"):
+        raise ValueError(f"pooling must be 'mean' or 'cls', not {pooling!r}")
+    state = adapt_state_dict(hub_state_dict() if state is None else state)
+    model = Labram(n_chans=N_CHANNELS, n_times=SAMPLES_PER_WINDOW, sfreq=TARGET_SFREQ, n_outputs=0,
+                   use_mean_pooling=(pooling == "mean"), chs_info=[{"ch_name": c} for c in LABRAM_CH_NAMES])
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    allowed_missing = {"fc_norm.weight", "fc_norm.bias"} if pooling == "mean" else set()
+    allowed_unexpected = {"norm.weight", "norm.bias"} if pooling == "mean" else set()
+    if set(missing) != allowed_missing or set(unexpected) != allowed_unexpected:
+        raise RuntimeError(f"unexpected weight mismatch: missing {missing}, unexpected {unexpected}")
+    if pooling == "mean":
+        # a fresh LayerNorm is parameter-free until trained: weight 1, bias 0
+        if not (torch.all(model.fc_norm.weight == 1) and torch.all(model.fc_norm.bias == 0)):
+            raise RuntimeError("fc_norm is not at its initial values")
+    n_params = sum(p.numel() for p in model.parameters())
+    if n_params != EXPECTED_N_PARAMS:
+        raise RuntimeError(f"model has {n_params} parameters; expected {EXPECTED_N_PARAMS} (LaBraM-base, no head)")
+    return model.eval()
+
+
+@torch.no_grad()
+def window_features(model, windows: torch.Tensor, batch_size: int = 64) -> torch.Tensor:
+    """(n_windows, 19, 2000) in the LaBraM convention -> (n_windows, 200), fp32."""
+    if windows.ndim != 3 or windows.shape[1:] != (N_CHANNELS, SAMPLES_PER_WINDOW):
+        raise ValueError(f"windows must be (n, {N_CHANNELS}, {SAMPLES_PER_WINDOW}), got {tuple(windows.shape)}")
+    device = next(model.parameters()).device
+    out = []
+    for start in range(0, windows.shape[0], batch_size):
+        batch = windows[start : start + batch_size].to(device=device, dtype=torch.float32)
+        out.append(model(batch, ch_names=list(LABRAM_CH_NAMES)).float().cpu())
+    return torch.cat(out) if out else torch.zeros((0, EMBED_DIM))
+
+
+def _source_cache_provenance(cache_path: Path) -> dict:
+    """Version, cohort, counts and build time of the cache the features come from."""
+    info = cache_info(cache_path)
+    keep = ("version", "cohort", "n_recordings", "n_channels", "ch_names", "sfreq", "built_at",
+            "n_edf_files", "n_skipped", "skipped")
+    return {k: info[k] for k in keep if k in info}
+
+
+def extract_features(cache_path: Path, out_path: Path, device: str = "cpu", batch_size: int = 64,
+                     state: Optional[Dict[str, torch.Tensor]] = None) -> dict:
+    """Per-window features for every recording in a version-2 cache; returns the metadata.
+
+    Recordings are processed in sorted pid order; the feature rows follow ``pids``.
+    """
+    cache_path, out_path = Path(cache_path), Path(out_path)
+    eeg = load_cache(cache_path, INPUT_CONVENTION)
+    pids = sorted(eeg)
+    model_mean = build_model("mean", state).to(device)
+    model_cls = build_model("cls", state).to(device)
+    features = np.zeros((len(pids), MAX_WINDOWS, EMBED_DIM), dtype=np.float32)
+    features_cls = np.zeros_like(features)
+    valid_counts = np.zeros(len(pids), dtype=np.int32)
+    t0 = _dt.datetime.now()
+    for i, pid in enumerate(pids):
+        windows, padding_mask = eeg[pid]
+        valid_idx = np.flatnonzero(~padding_mask)
+        valid_counts[i] = len(valid_idx)
+        if not len(valid_idx):
+            continue
+        x = torch.from_numpy(windows[valid_idx])
+        features[i, valid_idx] = window_features(model_mean, x, batch_size).numpy()
+        features_cls[i, valid_idx] = window_features(model_cls, x, batch_size).numpy()
+        if (i + 1) % 10 == 0 or i + 1 == len(pids):
+            logger.info("%s: %d/%d recordings", cache_path.name, i + 1, len(pids))
+    if not (np.isfinite(features).all() and np.isfinite(features_cls).all()):
+        raise RuntimeError("non-finite feature values")
+    with_windows = valid_counts > 0
+    norms = [np.linalg.norm(features[i, : valid_counts[i]], axis=-1).mean() for i in np.flatnonzero(with_windows)]
+    meta = {
+        "source_cache": cache_path.name, "source_cache_meta": _source_cache_provenance(cache_path),
+        "n_recordings": len(pids), "n_recordings_without_windows": int((~with_windows).sum()),
+        "embed_dim": EMBED_DIM, "max_windows": MAX_WINDOWS, "n_patches": N_PATCHES,
+        "input_convention": INPUT_CONVENTION, "cache_ch_names": list(CH_NAMES), "labram_ch_names": list(LABRAM_CH_NAMES),
+        "hub_repo": HUB_REPO, "hub_revision": HUB_REVISION, "hub_safetensors_sha256": HUB_SAFETENSORS_SHA256,
+        "pooling": {"features": "mean over patch tokens + parameter-free LayerNorm", "features_cls": "[CLS] token"},
+        "device": device, "dtype": "float32", "built_at": t0.isoformat(timespec="seconds"),
+        "elapsed_s": round((_dt.datetime.now() - t0).total_seconds(), 1),
+        "valid_windows": {"min": int(valid_counts.min()), "median": float(np.median(valid_counts)),
+                          "max": int(valid_counts.max())} if len(pids) else None,
+        "feature_norm_mean": float(np.mean(norms)) if norms else None,
+    }
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(out_path, features=features, features_cls=features_cls, pids=np.array(pids),
+                        valid_window_counts=valid_counts, meta=json.dumps(meta))
+    Path(str(out_path) + ".meta.json").write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n")
+    return meta
+
+
+def verify_against_official(checkpoint: Path = OFFICIAL_CHECKPOINT_PATH,
+                            state: Optional[Dict[str, torch.Tensor]] = None) -> dict:
+    """Check that every hub tensor is numerically identical to an official checkpoint
+    tensor of the same shape (names differ between the two code bases)."""
+    checkpoint = Path(checkpoint)
+    digest = _sha256(checkpoint)
+    if digest != OFFICIAL_CHECKPOINT_SHA256:
+        raise RuntimeError(f"{checkpoint} has sha256 {digest}, expected {OFFICIAL_CHECKPOINT_SHA256}")
+    official = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    official = official.get("model", official)
+    by_shape: Dict[tuple, list] = {}
+    for k, v in official.items():
+        by_shape.setdefault(tuple(v.shape), []).append(v)
+    state = hub_state_dict() if state is None else state
+    unmatched = [k for k, v in state.items()
+                 if not any(torch.equal(v.float(), o.float()) for o in by_shape.get(tuple(v.shape), []))]
+    if unmatched:
+        raise RuntimeError(f"{len(unmatched)} hub tensors have no identical official tensor: {unmatched[:5]}")
+    return {"hub_tensors": len(state), "identical": len(state) - len(unmatched), "checkpoint_sha256": digest}
+
+
+def export_weights(out_path: Path = WEIGHTS_19CH_PATH, state: Optional[Dict[str, torch.Tensor]] = None) -> Path:
+    """The adapted 19-channel state dict for the vendored model used in training."""
+    adapted = adapt_state_dict(hub_state_dict() if state is None else state)
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save({"state_dict": adapted, "hub_repo": HUB_REPO, "hub_revision": HUB_REVISION,
+                "hub_safetensors_sha256": HUB_SAFETENSORS_SHA256, "n_patches": N_PATCHES,
+                "n_chans": N_CHANNELS, "n_times": SAMPLES_PER_WINDOW, "sfreq": TARGET_SFREQ,
+                "cache_ch_names": list(CH_NAMES), "labram_ch_names": list(LABRAM_CH_NAMES),
+                "input_convention": INPUT_CONVENTION}, out_path)
+    return out_path
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    sub = parser.add_subparsers(dest="command", required=True)
+    e = sub.add_parser("extract", help="per-window features for a cohort's version-2 cache")
+    e.add_argument("--cohort", choices=sorted(CACHE_PATHS), required=True)
+    e.add_argument("--cache", type=Path, default=None, help="cache path (default the cohort's version-2 cache)")
+    e.add_argument("--out", type=Path, default=None, help="npz path (default outputs/labram_features_v2_<cohort>.npz)")
+    e.add_argument("--device", default="cpu")
+    e.add_argument("--batch-size", type=int, default=64)
+    v = sub.add_parser("verify-official", help="compare the hub weights with the official checkpoint")
+    v.add_argument("checkpoint", type=Path, nargs="?", default=OFFICIAL_CHECKPOINT_PATH)
+    x = sub.add_parser("export-weights", help="write the adapted 19-channel state dict")
+    x.add_argument("--out", type=Path, default=WEIGHTS_19CH_PATH)
+    args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    if args.command == "extract":
+        meta = extract_features(args.cache or CACHE_PATHS[args.cohort], args.out or FEATURE_PATHS[args.cohort],
+                                device=args.device, batch_size=args.batch_size)
+        print(json.dumps(meta, indent=2, sort_keys=True))
+    elif args.command == "verify-official":
+        print(json.dumps(verify_against_official(args.checkpoint)))
+    else:
+        print(export_weights(args.out))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

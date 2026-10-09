@@ -61,6 +61,19 @@ The EEG rerun uses the per-epoch, per-channel z-score of that pipeline
 trained-from-scratch encoder and for REVE. The pretrained LaBraM input is microvolts
 divided by 100, as in its official code.
 
+Pretrained LaBraM channel names (`shared/labram_pretrained.py`): LaBraM selects a
+learned channel embedding by name from the official `standard_1020` list, which holds
+separate rows for the legacy temporal names T3/T4/T5/T6 (positions 88-91) and the modern
+names T7/T8/P7/P8 (positions 37, 45, 59, 67). The official clinical fine-tuning runs
+(TUAB and TUEV in `run_class_finetuning.py`) name the TUH channels T3/T4/T5/T6, so the
+four temporal channels of the cache (stored as T7/T8/P7/P8) are given to LaBraM under
+the legacy names; the other 15 names are unchanged. Duong's repository has no LaBraM
+path to compare with. braindecode's canonical list matches `standard_1020` position
+for position over its 128 entries, and the hub weights are tensor-identical to the
+official `labram-base.pth` (221 of 221 tensors). Per-window features are the mean over
+the patch tokens through a parameter-free LayerNorm (`use_mean_pooling=True`, the
+official fine-tuning default) with the [CLS] token stored alongside.
+
 | Aspect | Ours (rerun) | Duong (benchmark z-score path) | Assessment |
 |---|---|---|---|
 | Units | microvolts (`get_data(units="uV")`) | microvolts | same |

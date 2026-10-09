@@ -458,10 +458,10 @@ def build_cache(cohort: str, out_path: Optional[Path] = None, limit: Optional[in
 
 def write_cache(path: Path, meta: dict, recordings: Dict[str, dict]) -> dict:
     """Write the cache atomically plus its sidecar ``<path>.meta.json``; returns the
-    metadata as written (``meta`` plus the channel and shape fields)."""
+    metadata as written (``meta`` plus the channel, shape and count fields)."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    meta = {**meta, **_shape_fields(recordings)}
+    meta = {**meta, **_shape_fields(recordings), "n_recordings": len(recordings)}
     payload = {"meta": meta, "recordings": recordings}
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".partial")
     try:
