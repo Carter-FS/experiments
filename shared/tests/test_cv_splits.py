@@ -176,7 +176,9 @@ def test_every_epoch_loop_takes_its_budget_through_max_epochs(module):
                     offenders.append(f"line {node.lineno}: for {target} in {bound}")
         elif isinstance(node, ast.While):
             test = ast.get_source_segment(src, node.test) or ""
-            if re.search(r"epoch", test, re.I):
+            body_names = {t.id for n in ast.walk(node) if isinstance(n, (ast.Assign, ast.AugAssign))
+                          for t in (n.targets if isinstance(n, ast.Assign) else [n.target]) if isinstance(t, ast.Name)}
+            if re.search(r"epoch", test, re.I) or any(re.search(r"epoch", b, re.I) for b in body_names):
                 offenders.append(f"line {node.lineno}: while {test} (not budgeted)")
     assert found, f"{module} has no epoch loop"
     assert not offenders, f"{module}: epoch loops bypass max_epochs: {offenders}"

@@ -408,6 +408,7 @@ case "${1:-}" in
         task="${2:-}"; [[ -n "$task" ]] || { echo "usage: smoke <task>" >&2; exit 2; }
         [[ "$task" == exp19_* ]] && { echo "smoke: $task has no smoke mode" >&2; exit 2; }
         SMOKE_OUT="${SMOKE_OUT:-/tmp/asm_smoke_$$}"; mkdir -p "$SMOKE_OUT"
+        SMOKE_OUT="$(cd "$SMOKE_OUT" && pwd)"   # absolute: the thesis tasks run from another directory
         REAL_OUT="$OUT"; OUT="$SMOKE_OUT"
         CV_SEL+=(--smoke); SMOKE_FLAG=(--smoke)
         EXP18_SEL+=(--smoke --out-dir "$SMOKE_OUT/exp18_mixed_cohort")

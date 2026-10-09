@@ -80,3 +80,13 @@ def test_thesis_result_globs_skip_smoke_files():
                 if not re.search(r"result_files\(|_smoke", line):
                     offenders.append(f"{path.name}:{i}")
     assert offenders == [], offenders
+
+
+def test_the_two_smoke_file_predicates_agree():
+    """shared.verify_oof and the thesis _asm_paths carry the same predicate (separate repos)."""
+    sys.path.insert(0, str(REPO / "thesisStandalone" / "analysis"))
+    import _asm_paths as ap
+    from shared import verify_oof as v
+    for name in ("predictions_oof_x_sp-multilabel_rf5_s42.json", "predictions_oof_x_sp-multilabel_rf5_s42_smoke.json",
+                 "hep_external_summary_sp-multilabel_rf5_s42_smoke.csv", "ablation_results_20261009_1_smoke.json", "smokeless.csv"):
+        assert v.is_smoke_file(Path(name)) == ap.is_smoke_file(Path(name)) == ("_smoke" in Path(name).stem)

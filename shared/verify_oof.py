@@ -96,7 +96,7 @@ def missing_expected(root: Path, manifest: Path) -> list[str]:
     missing = []
     for line in manifest.read_text().splitlines():
         pattern = line.strip()
-        if pattern and not pattern.startswith("#") and not any(root.glob(pattern)):
+        if pattern and not pattern.startswith("#") and not any(not is_smoke_file(p) for p in root.glob(pattern)):
             missing.append(pattern)
     return missing
 

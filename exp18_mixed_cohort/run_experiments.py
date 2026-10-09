@@ -242,6 +242,9 @@ def main() -> None:
     if args.smoke:
         portable.N_EPOCHS_MAX = portable.EEG_N_EPOCHS_MAX = 2
         portable.EARLY_STOP_PATIENCE = portable.EEG_EARLY_STOP_PATIENCE = 1
+        if args.refit_folds:
+            args.refit_folds = min(args.refit_folds, 2)   # as shared.cv_splits SMOKE_INNER_FOLDS
+            set_refit_folds(args.refit_folds)
     excluded = []
     if args.exclude_hep_pids:
         excluded = [s.strip() for s in args.exclude_hep_pids.read_text().splitlines() if s.strip()]
