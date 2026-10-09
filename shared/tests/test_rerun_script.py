@@ -65,6 +65,11 @@ def _eeg_tree(tmp_path, guard_age="old"):
            thesis / "hep_external_cis_rf5.csv",
            thesis / "reve_summary.csv",
            thesis / "metrics_oof.csv",
+           thesis / "cis_tier1.csv",
+           thesis / "all_pairs_stats.csv",
+           thesis / "best_asm_simulation_summary.json",
+           thesis / "clinical_reliability_ranking.csv",
+           thesis / "stage_b_comparison.csv",
            out / "_clean_rerun_v2" / "refit" / "exp9_encoder_eeg2vec_s42.done",
            out / "_clean_rerun_v2" / "refit" / "exp5_s42.done",
            out / "_clean_rerun_v2" / "innersplit" / "hep_eeg_s42.done"]
@@ -75,8 +80,13 @@ def _eeg_tree(tmp_path, guard_age="old"):
             out / "eeg_cache" / "eeg19_v2_alfred.pkl",
             out / "labram_features_v2_alfred.npz",
             thesis / "hep_external_summary_sp-multilabel_rf5_s42.csv",
+            thesis / "hep_external_predictions_sp-multilabel_rf5_s42_h12.csv",
             thesis / "hep_reverse_summary_sp-multilabel_rf5_s42.csv",
+            thesis / "hep_focal_external_predictions_sp-multilabel_rf5_s42.csv",
+            thesis / "hep_external_oov_breakdown.csv",
             thesis / "metrics_decomposition.csv",
+            thesis / "eeg_report_keywords.csv",
+            thesis / "asm_first_prescription_counts.csv",
             out / "_clean_rerun_v2" / "refit" / "exp4_s42.done"]
     for f in eeg + keep:
         f.touch()
@@ -85,11 +95,7 @@ def _eeg_tree(tmp_path, guard_age="old"):
         os.utime(f, (old, old))
     guard = out / "eeg_cache" / "eeg19_v2_alfred.pkl.meta.json"
     guard.write_text("{}")                      # newer than every file above
-    fresh = out / "exp9_predictions" / "predictions_oof_exp9_encoder_reve_frozen_sp-multilabel_rf5_s42.json"
-    fresh.touch()                               # written after the cache: a rerun output, must stay
-    now = time.time() + 60
-    os.utime(fresh, (now, now))
-    return out, thesis, eeg, keep + [fresh], guard
+    return out, thesis, eeg, keep, guard
 
 
 def test_archive_eeg_moves_eeg_outputs_only_and_only_older_than_the_cache(tmp_path):
@@ -103,6 +109,7 @@ def test_archive_eeg_moves_eeg_outputs_only_and_only_older_than_the_cache(tmp_pa
     real = run(["archive-eeg"], **env)
     assert real.returncode == 0, real.stderr
     dest = out / "_archive_eeg_defect_20261009"
+    assert (dest / ".complete").exists()
     assert not any(f.exists() for f in eeg) and all(f.exists() for f in keep)
     assert (dest / "exp9_predictions" / eeg[0].name).exists()
     assert (dest / "thesis_output" / "hep_external_cis_rf5.csv").exists()
@@ -110,6 +117,27 @@ def test_archive_eeg_moves_eeg_outputs_only_and_only_older_than_the_cache(tmp_pa
     assert (dest / "exp15_reve_quad" / "seed42_none" / "predictions_oof.json").exists()
     again = run(["archive-eeg"], **env)
     assert again.returncode == 2 and "already made" in again.stderr
+    (dest / ".complete").unlink()                                # an interrupted archive resumes
+    resumed = run(["archive-eeg"], **env)
+    assert resumed.returncode == 0 and (dest / ".complete").exists()
+
+
+def test_archive_eeg_halts_on_an_eeg_file_newer_than_the_cache(tmp_path):
+    """A rerun output (newer than the cache sidecar) in an EEG family stops the archive
+    before anything moves; ALLOW_NEWER=1 archives it with the rest."""
+    import time
+    out, thesis, eeg, keep, guard = _eeg_tree(tmp_path)
+    env = {"OUT": out, "ASM_ANALYSIS_OUTPUT_DIR": thesis}
+    newer = out / "exp9_predictions" / "predictions_oof_exp9_encoder_reve_frozen_sp-multilabel_rf5_s42.json"
+    newer.touch()
+    now = time.time() + 60
+    os.utime(newer, (now, now))
+    halted = run(["archive-eeg"], **env)
+    assert halted.returncode == 2 and newer.name in halted.stderr and "nothing was moved" in halted.stderr
+    assert all(f.exists() for f in eeg + [newer])
+    listed = run(["archive-eeg"], DRY_RUN=1, ALLOW_NEWER=1, **env)
+    assert listed.returncode == 0 and str(newer) in listed.stdout and all(str(f) in listed.stdout for f in eeg)
+    assert all(f.exists() for f in eeg + [newer])
 
 
 def test_archive_eeg_refuses_without_the_version2_cache(tmp_path):
@@ -127,3 +155,23 @@ def test_pending_array_reports_nothing_pending(tmp_path):
         (out / "_clean_rerun_v2" / "refit" / f"{task}_s{seed}.done").touch()
     res = run(["pending-array"], OUT=out)
     assert res.returncode == 1 and "nothing pending" in res.stderr and res.stdout.strip() == ""
+
+
+def test_pending_array_cpu_indexes_the_cpu_list(tmp_path):
+    out = tmp_path / "outputs"
+    (out / "_clean_rerun_v2" / "refit").mkdir(parents=True)
+    cpu = run(["list-cpu"]).stdout.split()
+    (out / "_clean_rerun_v2" / "refit" / f"{cpu[0].replace(':', '_s')}.done").touch()
+    idx = [int(i) for i in run(["pending-array-cpu"], OUT=out).stdout.strip().split(",")]
+    assert 0 not in idx and 1 in idx and max(idx) < len(cpu)
+
+
+def test_every_thesis_script_takes_the_output_dir_from_the_helper():
+    import re
+    offenders = []
+    for path in sorted((REPO / "thesisStandalone" / "analysis").glob("*.py")):
+        if path.name == "_asm_paths.py":
+            continue
+        if re.search(r'REPO_ROOT / "analysis" / "output"|resolve\(\)\.parent / "output"', path.read_text()):
+            offenders.append(path.name)
+    assert offenders == [], offenders

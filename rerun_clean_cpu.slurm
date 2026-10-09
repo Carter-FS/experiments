@@ -9,6 +9,7 @@
 #     PROTOCOL=refit bash rerun_clean.sh list-cpu | cat -n     # index <-> task (190 items)
 #     sbatch --export=ALL,PROTOCOL=refit rerun_clean_cpu.slurm
 #     sbatch --export=ALL,PROTOCOL=innersplit --array=0-119%24 rerun_clean_cpu.slurm
+#     sbatch --export=ALL,PROTOCOL=refit --array=$(PROTOCOL=refit bash rerun_clean.sh pending-array-cpu)%24 rerun_clean_cpu.slurm   # the items not yet done
 #SBATCH --job-name=clean_rerun_cpu
 #SBATCH --partition=comp
 #SBATCH --array=0-189%24

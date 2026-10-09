@@ -10,7 +10,7 @@
 #     sbatch --export=ALL,PROTOCOL=refit rerun_clean.slurm    # every refit item, 24 at a time
 #     sbatch --export=ALL,PROTOCOL=innersplit --array=0-288%24 rerun_clean.slurm
 #     sbatch --export=ALL,PROTOCOL=refit --array=0,5,14 rerun_clean.slurm   # a subset
-#     sbatch --export=ALL,PROTOCOL=refit --array=$(bash rerun_clean.sh pending-array)%24 rerun_clean.slurm   # the items not yet done
+#     sbatch --export=ALL,PROTOCOL=refit --array=$(PROTOCOL=refit bash rerun_clean.sh pending-array)%24 rerun_clean.slurm   # the items not yet done
 # then, once an array has finished:
 #     PROTOCOL=refit bash rerun_clean.sh verify
 #SBATCH --job-name=clean_rerun

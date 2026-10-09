@@ -10,7 +10,7 @@
 #   bash rerun_clean.sh archive-iv20      # move pre-2026-09-28 inner-split outputs aside (once)
 #   bash rerun_clean.sh archive-eeg       # move the EEG-dependent outputs and done markers of the
 #                                         # defective-cache runs aside (once, before the EEG rerun; DRY_RUN=1 lists)
-#   bash rerun_clean.sh pending-array     # slurm --array index list of the items not yet done (and not deferred)
+#   bash rerun_clean.sh pending-array     # slurm --array index list of the items not yet done (and not deferred); -cpu for the CPU wrapper
 #   sbatch rerun_clean.slurm              # every item as a slurm array (see that file)
 #
 # PROTOCOL selects the selection protocol (docs/analysis_plan_clean_rerun_exp18.md):
@@ -386,69 +386,100 @@ archive_iv20 () {
 # Move every output that depended on the defective EEG cache (the 27-channel,
 # unnormalised cache; the from-scratch "LaBraM"; the version-1 REVE features) aside
 # with its done markers, so the EEG rerun regenerates it and neither `verify` nor the
-# analysis can read a stale file. Only files older than the version-2 Melbourne cache
-# sidecar move, so the command is safe to repeat once the rerun has started; it refuses
-# to run while the archive directory exists. Outputs that do not depend on EEG stay:
-# exp1, exp4 (and its decomposition), exp5a/b, exp6a, HEP forward/reverse/focal, exp18
-# clinical/text configurations and their overlap audit, exp19. DRY_RUN=1 lists only.
+# analysis can read a stale file. Two phases: collect, then move. A candidate newer
+# than the version-2 Melbourne cache sidecar is listed and stops the run (ALLOW_NEWER=1
+# moves it too), so the command cannot sweep rerun outputs; it refuses to run once
+# the archive is complete (an interrupted run resumes). Outputs that do not depend on EEG stay: exp1, exp4
+# (and its decomposition), exp5a/b, exp6a, HEP forward/reverse/focal, exp18 clinical/
+# text configurations and their overlap audit, exp19. In the thesis output directory
+# everything moves except the per-seed outputs of those non-EEG tasks and the text-
+# report and cohort-count files (THESIS_KEEP_RE); the archived thesis tables are
+# rebuilt by the analysis scripts after `verify` (plan step S10). DRY_RUN=1 lists.
+THESIS_KEEP_RE='^(hep_external_(summary|predictions|oov_breakdown)(\.csv|_sp-)|hep_external_exp19_|hep_reverse_|hep_focal_external_|metrics_decomposition|eeg_report_keywords|asm_first_prescription_counts)'
 archive_eeg () {
-    local dest="$OUT/_archive_eeg_defect_20261009" guard="$OUT/eeg_cache/eeg19_v2_alfred.pkl.meta.json"
-    local thesis_out="${ASM_ANALYSIS_OUTPUT_DIR:-$THESIS/analysis/output}" dry=0 n=0 f t p
+    local out="${OUT%/}" dest guard thesis_out dry=0 n=0 f t p d rel
+    dest="$out/_archive_eeg_defect_20261009"; guard="$out/eeg_cache/eeg19_v2_alfred.pkl.meta.json"
+    thesis_out="${ASM_ANALYSIS_OUTPUT_DIR:-$THESIS/analysis/output}"; thesis_out="${thesis_out%/}"
     [[ "${DRY_RUN:-0}" == 1 ]] && dry=1
     if [[ ! -f "$guard" ]]; then
         echo "archive-eeg: $guard not found; build the version-2 caches first" >&2; return 2
     fi
-    if [[ $dry == 0 && -e "$dest" ]]; then
-        echo "archive-eeg: $dest exists; the archive was already made" >&2; return 2
+    if [[ $dry == 0 && -e "$dest/.complete" ]]; then
+        echo "archive-eeg: $dest is complete; the archive was already made" >&2; return 2
     fi
-    move () {  # $1 file, $2 destination relative to the archive
-        if [[ -e "$dest/$2" ]]; then echo "archive-eeg: $dest/$2 exists; not overwriting" >&2; return 1; fi
-        if [[ $dry == 1 ]]; then echo "would move $1 $dest/$2"
-        else mkdir -p "$dest/$(dirname "$2")" && mv "$1" "$dest/$2" || return 1; fi
-        n=$((n + 1))
+    # an archive directory without the stamp is an interrupted run: resume it
+    local -a src=() rel_dest=() newer=()
+    add () {  # $1 file, $2 destination relative to the archive
+        if [[ "$1" -nt "$guard" ]]; then newer+=("$1"); return; fi
+        src+=("$1"); rel_dest+=("$2")
     }
-    move_found () {  # $1 destination prefix ("" keeps the path relative to $OUT); then find arguments
-        local prefix="$1" rel; shift
+    collect () {  # $1 destination prefix ("" keeps the path relative to $out); $2 directory; then find arguments
+        local prefix="$1" dir="$2"; shift 2
+        [[ -d "$dir" ]] || return 0
         while IFS= read -r -d '' f; do
-            if [[ -n "$prefix" ]]; then rel="$prefix/${f##*/}"; else rel="${f#$OUT/}"; fi
-            move "$f" "$rel" || return 1
-        done < <(find -L "$@" ! -newer "$guard" -print0 2>/dev/null)
+            if [[ -n "$prefix" ]]; then add "$f" "$prefix/${f##*/}"; else add "$f" "${f#"$out"/}"; fi
+        done < <(find -L "$dir" "$@" -type f -print0)
     }
     # prediction and summary directories whose every file depends on EEG
     for d in exp2_predictions exp3_predictions exp7_predictions exp9_predictions exp11_predictions \
              exp15_predictions exp16_predictions exp17_predictions \
              exp2_results exp3_results exp7_results exp9_results exp11_results exp15_reve_quad; do
-        [[ -d "$OUT/$d" ]] && { move_found "" "$OUT/$d" -type f || return 1; }
+        collect "" "$out/$d"
     done
     # the EEG rows of exp5 and exp6
-    move_found "" "$OUT/exp5_predictions" "$OUT/exp6_predictions" -maxdepth 1 -type f \
-        \( -name 'predictions_oof_exp5c_*' -o -name 'predictions_oof_exp6b_*' \) || return 1
+    collect "" "$out/exp5_predictions" -maxdepth 1 -name 'predictions_oof_exp5c_*'
+    collect "" "$out/exp6_predictions" -maxdepth 1 -name 'predictions_oof_exp6b_*'
     # exp18: the EEG configurations and the aggregates that mix their rows in
-    move_found "" "$OUT/exp18_mixed_cohort" -maxdepth 1 -type f \
-        \( -name '*Exp5c*' -o -name '*Exp6b*' -o -name '*Exp7a*' -o -name 'summary.csv' -o -name 'per_seed.csv' -o -name 'tests.csv' \) || return 1
+    collect "" "$out/exp18_mixed_cohort" -maxdepth 1 \
+        \( -name '*Exp5c*' -o -name '*Exp6b*' -o -name '*Exp7a*' -o -name 'summary.csv' -o -name 'per_seed.csv' -o -name 'tests.csv' \)
     # the defective caches and the version-1 REVE features
-    move_found "" "$OUT/eeg_cache" -maxdepth 1 -type f -name 'processed_eeg*' || return 1
-    move_found "" "$OUT" -maxdepth 1 -type f \( -name 'reve_features_alfred*' -o -name 'reve_features_hep*' \) || return 1
-    # thesis analysis outputs derived from EEG predictions
-    move_found "thesis_output" "$thesis_out" -maxdepth 1 -type f \
-        \( -name 'hep_external_*_eeg*' -o -name 'hep_reduced_external_*' -o -name 'hep_external_cis*' \
-           -o -name 'reve_*' -o -name 'metrics_oof*' -o -name 'stage_b_*' -o -name 'sensitivity_specificity.csv' \) || return 1
+    collect "" "$out/eeg_cache" -maxdepth 1 -name 'processed_eeg*'
+    collect "" "$out" -maxdepth 1 \( -name 'reve_features_alfred*' -o -name 'reve_features_hep*' \)
+    # thesis analysis outputs: everything except the non-EEG per-seed outputs and the text files
+    if [[ -d "$thesis_out" ]]; then
+        while IFS= read -r -d '' f; do
+            grep -qE "$THESIS_KEEP_RE" <<< "${f##*/}" || add "$f" "thesis_output/${f##*/}"
+        done < <(find -L "$thesis_out" -maxdepth 1 -type f -print0)
+    fi
     # done markers of every EEG task, under both protocols
     for p in refit innersplit; do
-        [[ -d "$OUT/_clean_rerun_v2/$p" ]] || continue
-        for f in "$OUT/_clean_rerun_v2/$p"/*.done; do
-            [[ -f "$f" && "$f" -ot "$guard" ]] || continue
+        [[ -d "$out/_clean_rerun_v2/$p" ]] || continue
+        for f in "$out/_clean_rerun_v2/$p"/*.done; do
+            [[ -f "$f" ]] || continue
             t="${f##*/}"; t="${t%_s[0-9]*.done}"
-            grep -qE "$EEG_TASK_RE" <<< "$t" && { move "$f" "${f#$OUT/}" || return 1; }
+            grep -qE "$EEG_TASK_RE" <<< "$t" && add "$f" "${f#"$out"/}"
         done
     done
-    if [[ $dry == 1 ]]; then echo "(dry run) would move $n file(s) to $dest"; else echo "moved $n file(s) to $dest"; fi
+    if [[ ${#newer[@]} -gt 0 ]]; then
+        if [[ "${ALLOW_NEWER:-0}" == 1 ]]; then
+            for f in "${newer[@]}"; do
+                case "$f" in "$thesis_out"/*) add_rel="thesis_output/${f##*/}" ;; *) add_rel="${f#"$out"/}" ;; esac
+                src+=("$f"); rel_dest+=("$add_rel")
+            done
+        else
+            echo "archive-eeg: ${#newer[@]} EEG-dependent file(s) are newer than $guard and were not archived" >&2
+            printf '  %s\n' "${newer[@]}" >&2
+            echo "archive-eeg: if they predate the rerun, ALLOW_NEWER=1 archives them too; nothing was moved" >&2
+            return 2
+        fi
+    fi
+    local i
+    for i in "${!src[@]}"; do
+        if [[ -e "$dest/${rel_dest[$i]}" ]]; then echo "archive-eeg: $dest/${rel_dest[$i]} exists; not overwriting" >&2; return 1; fi
+        if [[ $dry == 1 ]]; then echo "would move ${src[$i]} $dest/${rel_dest[$i]}"
+        else mkdir -p "$dest/$(dirname "${rel_dest[$i]}")" && mv "${src[$i]}" "$dest/${rel_dest[$i]}" || return 1; fi
+        n=$((n + 1))
+    done
+    if [[ $dry == 1 ]]; then echo "(dry run) would move $n file(s) to $dest"
+    else mkdir -p "$dest" && date -Is > "$dest/.complete" && echo "moved $n file(s) to $dest"; fi
 }
 
-# slurm --array index list of the items with no done marker (deferred items excluded).
+# slurm --array index list of the items with no done marker (deferred items excluded):
+# `pending-array` indexes `list` (rerun_clean.slurm), `pending-array-cpu` indexes
+# `list-cpu` (rerun_clean_cpu.slurm).
 pending_array () {
     local i=0 idx=() item
-    for item in $(items); do
+    for item in $(${1:-items}); do
         if ! { [[ -f "$DONE/${item%%:*}_s${item##*:}.done" ]] && exp18_ready "${item%%:*}" "${item##*:}"; } \
                 && ! deferred "$item"; then idx+=("$i"); fi
         i=$((i + 1))
@@ -456,6 +487,8 @@ pending_array () {
     if [[ ${#idx[@]} -eq 0 ]]; then echo "pending-array: nothing pending" >&2; return 1; fi
     (IFS=,; echo "${idx[*]}")
 }
+
+items_cpu () { items | grep -E "$CPU_TASK_RE"; }
 
 items () {
     local t s
@@ -472,12 +505,13 @@ items () {
 
 case "${1:-}" in
     list) items ;;
-    list-cpu) items | grep -E "$CPU_TASK_RE" ;;
+    list-cpu) items_cpu ;;
     preflight) preflight ;;
     verify) verify ;;
     archive-iv20) archive_iv20 ;;
     archive-eeg) archive_eeg ;;
-    pending-array) pending_array ;;
+    pending-array) pending_array items ;;
+    pending-array-cpu) pending_array items_cpu ;;
     smoke)
         # An end-to-end dry run of one task on this host's data: first outer fold,
         # two inner folds, two epochs (shared.cv_splits --smoke; exp18's own --smoke),
@@ -512,7 +546,7 @@ case "${1:-}" in
         echo "== smoke $task (every output under $SMOKE_OUT) =="
         run_task "$task" 42; rc=$?
         exit $rc ;;
-    "") echo "usage: [PROTOCOL=refit|innersplit] bash rerun_clean.sh {preflight|list|list-cpu|verify|archive-iv20|archive-eeg|pending-array|smoke <task>|<task>:<seed>}" >&2; exit 2 ;;
+    "") echo "usage: [PROTOCOL=refit|innersplit] bash rerun_clean.sh {preflight|list|list-cpu|verify|archive-iv20|archive-eeg|pending-array|pending-array-cpu|smoke <task>|<task>:<seed>}" >&2; exit 2 ;;
     *:*)
         task="${1%%:*}"; seed="${1##*:}"
         marker="$DONE/${task}_s${seed}.done"
