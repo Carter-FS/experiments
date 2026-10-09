@@ -751,19 +751,22 @@ coding). `shared/verify_oof.py` requires these counts.
 
 ### C.5 Rerun
 
-- Items: exp2, exp3, exp5 (5c), exp6 (6b), exp7a, exp7b, exp7a_stratbatch, exp9
-  (all arms; the aggregator and embedding ablations stay deferred), exp11, exp15 (both
-  feature sets), exp16, exp17, hep_eeg (and its harmonised-label sensitivity),
-  hep_reduced, exp18 Exp5c/Exp6b/Exp7a; 373 work items in the GPU list and 190 in the
-  CPU list after the change, of which the pending ones are submitted
-  (`rerun_clean.sh pending-array`).
+- Items: exp2, exp3, exp5 (5c), exp6 (6b), exp7a, exp7b, exp7a_stratbatch, exp9 (the
+  six encoder arms of C.4: SimpleCNN, EEGNet, EEG2Vec, LaBraM from scratch, LaBraM-base
+  frozen, REVE-base frozen), exp15 (both feature sets), exp16, exp17, hep_eeg,
+  hep_reduced, exp18 Exp5c/Exp6b/Exp7a. As in the earlier rerun, the deferred items
+  are not submitted: exp9's frozen-SimpleCNN, aggregator and embedding-size ablations,
+  the exp11 grid, and the harmonised-HEP1-label EEG items (hep_eeg_h12, exp18_h12
+  Exp5c/Exp6b/Exp7a); `RUN_DEFERRED=1` runs them. The task list holds 373 work items
+  (190 of them on the CPU list); the pending, non-deferred ones are submitted
+  (`rerun_clean.sh pending-array`, `pending-array-cpu`).
 - Before submission `rerun_clean.sh archive-eeg` moves every output that depended on
   the previous cache, the previous caches, the version-1 REVE features, the derived
   thesis tables and the done markers of the EEG tasks to
   `outputs/_archive_eeg_defect_20261009/`; it halts if any such file is newer than the
   version-2 cache.
-- Every entry point was exercised end to end on this laptop's subset of the data
-  with the smoke mode (`--smoke`: one outer fold, two inner folds, two epochs, outputs
-  tagged `_smoke` and never read as results) before submission.
+- Every submitted item's entry point was exercised end to end on this laptop's subset
+  of the data with the smoke mode (`--smoke`: one outer fold, two inner folds, two
+  epochs, outputs tagged `_smoke` and never read as results) before submission.
 - `shared/verify_oof.py` and the expected-file manifest name the new arms and files
   and the counts of C.2.
