@@ -132,26 +132,40 @@ def test_smoke_mode_limits_folds_epochs_and_tags_outputs():
     assert protocol_metadata(0.2) == {"protocol": "innersplit", "refit_folds": 0, "smoke": False}
 
 
-# Runners of the clean rerun whose training loops must honour the smoke epoch budget.
+# Every module with a training loop that rerun_clean.sh runs (the HEP scripts train
+# through shared.portable_models) must take its epoch budget through max_epochs.
 SMOKE_RUNNERS = [
     "exp1_fusion.training", "exp2_fusion.training", "exp3_fusion.training", "exp4_baseline.training",
     "exp5_clinical_fusion.training", "exp6_clinical_triple.training", "exp7_all_modalities.training",
     "exp9_eeg_investigation.run_experiments", "exp11_eeg_upgrade.run_experiments",
     "exp15_reve_quad_mlp.training", "exp16_reduced_capacity.training", "shared.portable_models",
+    "analysis.reve_standalone", "analysis.reve_ablation", "analysis.reve_followups",
 ]
+
+
+def _import_runner(module):
+    import importlib
+    import sys
+    from pathlib import Path
+    if module.startswith("analysis."):
+        root = str(Path(__file__).resolve().parents[2] / "thesisStandalone")
+        if root not in sys.path:
+            sys.path.insert(0, root)
+    return importlib.import_module(module)
 
 
 @pytest.mark.parametrize("module", SMOKE_RUNNERS)
 def test_every_epoch_loop_takes_its_budget_through_max_epochs(module):
-    import importlib
     import inspect
     import re
-    mod = importlib.import_module(module)
+    mod = _import_runner(module)
     assert callable(getattr(mod, "max_epochs", None)), f"{module} does not import max_epochs at module level"
-    loops = re.findall(r"for epoch in range\(([^\n]*)\):", inspect.getsource(mod))
+    src = inspect.getsource(mod)
+    loops = [b for b in re.findall(r"for \w+ in range\(([^\n]*)\):", src) if re.search(r"epoch", b, re.I)]
     assert loops, f"{module} has no epoch loop"
     for bound in loops:
         assert "max_epochs(" in bound, f"{module}: epoch loop bound {bound!r} bypasses max_epochs"
+    assert not re.search(r"^\s*while .*epoch", src, re.I | re.M), f"{module}: a while-loop over epochs is not budgeted"
 
 
 SUMMARY_WRITERS = ["exp3_fusion.run_experiments", "exp4_baseline.run_experiments", "exp5_clinical_fusion.run_experiments",
@@ -179,5 +193,5 @@ def test_every_timestamped_summary_path_is_smoke_tagged(module):
     assert callable(getattr(mod, "smoke_tag", None)), f"{module} does not import smoke_tag at module level"
     src = inspect.getsource(mod)
     for line in src.splitlines():
-        if "RESULTS_DIR / f\"" in line and "{timestamp}" in line:
+        if "{timestamp}" in line and ".json" in line:
             assert "smoke_tag(" in line, f"{module}: untagged summary path: {line.strip()}"

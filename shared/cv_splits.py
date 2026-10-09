@@ -85,9 +85,10 @@ def max_epochs(n: int) -> int:
 
 
 def smoke_tag(path):
-    """``path`` with ``_smoke`` before its suffix in smoke mode, unchanged otherwise.
-    Every result or summary file a runner names outside ``cv_suffix`` goes through
-    this call, so a dry run never leaves an untagged file beside real outputs."""
+    """``path`` (as a ``Path``) with ``_smoke`` before its suffix in smoke mode, and
+    unchanged otherwise. Every result or summary file a runner names outside
+    ``cv_suffix`` goes through this call, so a dry run never leaves an untagged file
+    beside real outputs."""
     from pathlib import Path
     path = Path(path)
     return path.with_name(f"{path.stem}_smoke{path.suffix}") if _SMOKE else path
@@ -232,7 +233,8 @@ def cv_suffix(splitter: str, inner_val: float, cv_seed: int | None = None) -> st
     """Filename suffix for a CV protocol: empty for the legacy protocol (so its
     files keep the archived names), otherwise e.g. ``_sp-multilabel_iv20`` or,
     under the refit protocol, ``_sp-multilabel_rf5``, plus ``_s<seed>`` for an
-    explicit repeated-CV seed and ``_smoke`` in smoke mode."""
+    explicit repeated-CV seed and ``_smoke`` in smoke mode (``rf<k>`` keeps the
+    configured fold count; the effective count is in the file's metadata)."""
     if cv_seed is None:
         cv_seed = _REPEAT_SEED
     seed = ("" if cv_seed is None else f"_s{cv_seed}") + ("_smoke" if _SMOKE else "")

@@ -101,6 +101,11 @@ def missing_expected(root: Path, manifest: Path) -> list[str]:
     return missing
 
 
+def is_smoke_file(path: Path) -> bool:
+    """A dry-run file written by ``rerun_clean.sh smoke`` (``--smoke``), never a result."""
+    return "_smoke" in path.stem
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("root", nargs="?", default="outputs")
@@ -112,6 +117,10 @@ def main(argv: list[str]) -> int:
     # repeat pids, so the leakage/cohort checks don't apply to them.
     files = sorted(root.glob("exp*_predictions/predictions_oof*.json")) + sorted(
         root.glob("exp4_decomposition/predictions_oof*.json"))
+    smoke_files = [f for f in files if is_smoke_file(f)]
+    files = [f for f in files if not is_smoke_file(f)]
+    if smoke_files:
+        print(f"note: {len(smoke_files)} smoke-run file(s) ignored (rerun_clean.sh smoke relocates them)", file=sys.stderr)
     if not files:
         print(f"no prediction files under {root}", file=sys.stderr)
         return 1

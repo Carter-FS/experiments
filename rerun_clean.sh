@@ -5,7 +5,7 @@
 #   bash rerun_clean.sh list              # work items "task:seed", in array-index order
 #   bash rerun_clean.sh list-cpu          # the items that need no GPU (rerun_clean_cpu.slurm)
 #   bash rerun_clean.sh <task>:<seed>     # run one item (skipped if already done)
-#   bash rerun_clean.sh smoke <task>      # any task: 1 outer fold, 2 inner folds, 2 epochs, outputs to /tmp or suffixed _smoke
+#   bash rerun_clean.sh smoke <task>      # dry run of a task (not exp19_*): 1 outer fold, 2 inner folds, 2 epochs; every output under /tmp
 #   bash rerun_clean.sh verify            # gate: verify_oof + expected files + exp18 + HEP
 #   bash rerun_clean.sh archive-iv20      # move pre-2026-09-28 inner-split outputs aside (once)
 #   sbatch rerun_clean.slurm              # every item as a slurm array (see that file)
@@ -46,6 +46,7 @@ case "$PROTOCOL" in
     *) echo "PROTOCOL must be refit or innersplit, not $PROTOCOL" >&2; exit 2 ;;
 esac
 DONE="$OUT/_clean_rerun_v2/$PROTOCOL"
+SMOKE_FLAG=()   # (--smoke) under `smoke`, for the tasks that build their own CV flags
 THESIS="$REPO_DIR/thesisStandalone"
 SEEDS=(42 43 44 45 46)
 EXP18_EEG_SEEDS=" 42 43 44 "
@@ -171,7 +172,7 @@ run_task () {
                         "multilabel --inner-val 0" "multilabel --inner-val 0.2" "multilabel --refit-folds 5"; do
                 set -- $cell
                 "$PY" -m exp4_baseline.run_experiments --model mlp --log-predictions --deterministic \
-                    --splitter "$1" "$2" "$3" --cv-seed "$seed" \
+                    --splitter "$1" "$2" "$3" --cv-seed "$seed" ${SMOKE_FLAG[@]+"${SMOKE_FLAG[@]}"} \
                     --predictions-dir "$OUT/exp4_decomposition" \
                     --output "$OUT/exp4_decomposition/results_$1_${2#--}$3_s$seed.json" || return 1
             done ;;
@@ -184,7 +185,7 @@ run_task () {
         hep_eeg_h12) (cd "$THESIS" && "$PY" -m analysis.hep_external_validation_eeg "${CV[@]}" "${H12[@]}") ;;
         hep_reverse_h12) (cd "$THESIS" && "$PY" analysis/hep_reverse_validation.py "${CV[@]}" "${H12[@]}") ;;
         reve) (cd "$THESIS" && "$PY" analysis/reve_standalone.py "${CV[@]}" \
-                   --log-predictions "$REPO_DIR/$OUT/exp9_predictions") ;;
+                   --log-predictions "$(cd "$OUT" && pwd)/exp9_predictions") ;;
         exp19_tabular) exp19 --configs "${EXP19_TABULAR_CONFIGS[@]}" --seeds "$seed" ;;
         exp19_*) exp19 --configs "${EXP19_TEXT_CONFIGS[@]}" --encoders "${task#exp19_}" --seeds "$seed" ;;
         exp18_noRMH) exp18 --config Exp4a Exp5a Exp5b --exclude-rmh --seeds "$seed" ;;
@@ -399,16 +400,26 @@ case "${1:-}" in
     smoke)
         # An end-to-end dry run of one task on this host's data: first outer fold,
         # two inner folds, two epochs (shared.cv_splits --smoke; exp18's own --smoke),
-        # seed 42, no done marker. Tasks that take an output directory write under
-        # $SMOKE_OUT; the others write beside their real outputs with every file
-        # suffixed _smoke, so no dry run can be taken for a result.
+        # seed 42, no done marker. Every file a dry run writes is suffixed _smoke;
+        # tasks that take an output directory write under $SMOKE_OUT directly and
+        # the files the others write beside their real outputs are moved there at
+        # the end, so no dry run leaves anything next to a result. exp19 has no
+        # smoke mode (CPU-only, outside the EEG rerun) and is refused.
         task="${2:-}"; [[ -n "$task" ]] || { echo "usage: smoke <task>" >&2; exit 2; }
+        [[ "$task" == exp19_* ]] && { echo "smoke: $task has no smoke mode" >&2; exit 2; }
         SMOKE_OUT="${SMOKE_OUT:-/tmp/asm_smoke_$$}"; mkdir -p "$SMOKE_OUT"
-        OUT="$SMOKE_OUT"
-        CV_SEL+=(--smoke)
+        REAL_OUT="$OUT"; OUT="$SMOKE_OUT"
+        CV_SEL+=(--smoke); SMOKE_FLAG=(--smoke)
         EXP18_SEL+=(--smoke --out-dir "$SMOKE_OUT/exp18_mixed_cohort")
-        echo "== smoke $task (outputs under $SMOKE_OUT, files suffixed _smoke) =="
-        run_task "$task" 42 ;;
+        marker="$(mktemp)"
+        echo "== smoke $task (every output under $SMOKE_OUT) =="
+        run_task "$task" 42; rc=$?
+        # relocate the _smoke files written beside real outputs during this run
+        while IFS= read -r f; do
+            rel="${f#"$REAL_OUT"/}"; mkdir -p "$SMOKE_OUT/$(dirname "$rel")"; mv "$f" "$SMOKE_OUT/$rel"
+        done < <(find -L "$REAL_OUT" -type f -name '*_smoke*' -newer "$marker" 2>/dev/null)
+        rm -f "$marker"
+        exit $rc ;;
     "") echo "usage: [PROTOCOL=refit|innersplit] bash rerun_clean.sh {preflight|list|verify|archive-iv20|smoke <task>|<task>:<seed>}" >&2; exit 2 ;;
     *:*)
         task="${1%%:*}"; seed="${1##*:}"
