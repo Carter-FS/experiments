@@ -156,16 +156,30 @@ def _import_runner(module):
 
 @pytest.mark.parametrize("module", SMOKE_RUNNERS)
 def test_every_epoch_loop_takes_its_budget_through_max_epochs(module):
+    """AST walk: every ``for``/``while`` whose target or bound mentions epochs must take
+    its bound through ``max_epochs(...)``; the name must resolve at module level."""
+    import ast
     import inspect
     import re
     mod = _import_runner(module)
     assert callable(getattr(mod, "max_epochs", None)), f"{module} does not import max_epochs at module level"
     src = inspect.getsource(mod)
-    loops = [b for b in re.findall(r"for \w+ in range\(([^\n]*)\):", src) if re.search(r"epoch", b, re.I)]
-    assert loops, f"{module} has no epoch loop"
-    for bound in loops:
-        assert "max_epochs(" in bound, f"{module}: epoch loop bound {bound!r} bypasses max_epochs"
-    assert not re.search(r"^\s*while .*epoch", src, re.I | re.M), f"{module}: a while-loop over epochs is not budgeted"
+    tree = ast.parse(src)
+    found, offenders = 0, []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.For):
+            target = ast.get_source_segment(src, node.target) or ""
+            bound = ast.get_source_segment(src, node.iter) or ""
+            if re.search(r"epoch", target + bound, re.I):
+                found += 1
+                if "max_epochs(" not in bound:
+                    offenders.append(f"line {node.lineno}: for {target} in {bound}")
+        elif isinstance(node, ast.While):
+            test = ast.get_source_segment(src, node.test) or ""
+            if re.search(r"epoch", test, re.I):
+                offenders.append(f"line {node.lineno}: while {test} (not budgeted)")
+    assert found, f"{module} has no epoch loop"
+    assert not offenders, f"{module}: epoch loops bypass max_epochs: {offenders}"
 
 
 SUMMARY_WRITERS = ["exp3_fusion.run_experiments", "exp4_baseline.run_experiments", "exp5_clinical_fusion.run_experiments",

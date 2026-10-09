@@ -43,3 +43,40 @@ def test_verify_oof_ignores_smoke_files(tmp_path, capsys):
     assert v.main(["verify_oof", str(tmp_path)]) == 1          # nothing real to verify
     err = capsys.readouterr().err
     assert "1 smoke-run file(s) ignored" in err and "no prediction files" in err
+
+
+def test_thesis_output_dir_override_and_result_files(tmp_path, monkeypatch):
+    sys.path.insert(0, str(REPO / "thesisStandalone" / "analysis"))
+    import _asm_paths as ap
+    monkeypatch.setenv("ASM_ANALYSIS_OUTPUT_DIR", str(tmp_path / "thesis_output"))
+    out = ap.analysis_output_dir()
+    assert out == tmp_path / "thesis_output" and out.is_dir()
+    (out / "hep_external_summary_sp-multilabel_rf5_s42.csv").write_text("a\n")
+    (out / "hep_external_summary_sp-multilabel_rf5_s42_smoke.csv").write_text("a\n")
+    assert [p.name for p in ap.result_files("hep_external_summary_sp-multilabel_rf5_s*.csv")] == \
+        ["hep_external_summary_sp-multilabel_rf5_s42.csv"]
+    assert ap.is_smoke_file("x_rf5_s42_smoke.csv") and not ap.is_smoke_file("x_rf5_s42.csv")
+    monkeypatch.delenv("ASM_ANALYSIS_OUTPUT_DIR")
+    assert ap.analysis_output_dir() == REPO / "thesisStandalone" / "analysis" / "output"
+
+
+def test_hep_scripts_write_under_the_overridable_output_dir():
+    """Every thesis script that writes result CSVs names them through analysis_output_dir()."""
+    import re
+    for name in ("hep_external_validation.py", "hep_external_validation_eeg.py", "hep_reduced_external_validation.py",
+                 "hep_reverse_validation.py", "hep_focal_external_validation.py"):
+        src = (REPO / "thesisStandalone" / "analysis" / name).read_text()
+        assert "from _asm_paths import analysis_output_dir" in src, name
+        assert not re.search(r'REPO_ROOT / "analysis" / "output"', src), f"{name}: output path bypasses analysis_output_dir()"
+
+
+def test_thesis_result_globs_skip_smoke_files():
+    """A glob over seed-tagged result files must exclude dry runs."""
+    import re
+    offenders = []
+    for path in sorted((REPO / "thesisStandalone" / "analysis").glob("*.py")):
+        for i, line in enumerate(path.read_text().splitlines(), 1):
+            if re.search(r"\.glob\(|glob\.glob\(", line) and re.search(r"_s\*|predictions_oof", line):
+                if not re.search(r"result_files\(|_smoke", line):
+                    offenders.append(f"{path.name}:{i}")
+    assert offenders == [], offenders

@@ -5,7 +5,7 @@
 #   bash rerun_clean.sh list              # work items "task:seed", in array-index order
 #   bash rerun_clean.sh list-cpu          # the items that need no GPU (rerun_clean_cpu.slurm)
 #   bash rerun_clean.sh <task>:<seed>     # run one item (skipped if already done)
-#   bash rerun_clean.sh smoke <task>      # dry run of a task (not exp19_*): 1 outer fold, 2 inner folds, 2 epochs; every output under /tmp
+#   bash rerun_clean.sh smoke <task>      # dry run of a task (not exp19_*): 1 outer fold, 2 inner folds, 2 epochs; every output under /tmp (SMOKE_OUT)
 #   bash rerun_clean.sh verify            # gate: verify_oof + expected files + exp18 + HEP
 #   bash rerun_clean.sh archive-iv20      # move pre-2026-09-28 inner-split outputs aside (once)
 #   sbatch rerun_clean.slurm              # every item as a slurm array (see that file)
@@ -411,14 +411,24 @@ case "${1:-}" in
         REAL_OUT="$OUT"; OUT="$SMOKE_OUT"
         CV_SEL+=(--smoke); SMOKE_FLAG=(--smoke)
         EXP18_SEL+=(--smoke --out-dir "$SMOKE_OUT/exp18_mixed_cohort")
+        # the thesis scripts (HEP, REVE) write their CSVs under this directory
+        export ASM_ANALYSIS_OUTPUT_DIR="$SMOKE_OUT/thesis_output"
         marker="$(mktemp)"
+        # Relocate every _smoke file written beside real outputs during this run,
+        # also when the run is interrupted; nothing a dry run writes stays there.
+        relocate_smoke () {
+            local root f rel
+            for root in "$REAL_OUT" "$THESIS/analysis/output"; do
+                while IFS= read -r f; do
+                    rel="${f#"$root"/}"; mkdir -p "$SMOKE_OUT/relocated/$(dirname "$rel")"
+                    mv "$f" "$SMOKE_OUT/relocated/$rel"
+                done < <(find -L "$root" -type f -name '*_smoke*' -newer "$marker" 2>/dev/null)
+            done
+            rm -f "$marker"
+        }
+        trap relocate_smoke EXIT
         echo "== smoke $task (every output under $SMOKE_OUT) =="
         run_task "$task" 42; rc=$?
-        # relocate the _smoke files written beside real outputs during this run
-        while IFS= read -r f; do
-            rel="${f#"$REAL_OUT"/}"; mkdir -p "$SMOKE_OUT/$(dirname "$rel")"; mv "$f" "$SMOKE_OUT/$rel"
-        done < <(find -L "$REAL_OUT" -type f -name '*_smoke*' -newer "$marker" 2>/dev/null)
-        rm -f "$marker"
         exit $rc ;;
     "") echo "usage: [PROTOCOL=refit|innersplit] bash rerun_clean.sh {preflight|list|verify|archive-iv20|smoke <task>|<task>:<seed>}" >&2; exit 2 ;;
     *:*)

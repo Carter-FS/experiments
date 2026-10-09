@@ -18,3 +18,6 @@ thesis/
 
 # Local working documents (plans, scratch notes): never pushed
 docs/local/
+
+# Dry-run outputs (rerun_clean.sh smoke / --smoke) are never results
+*_smoke*
