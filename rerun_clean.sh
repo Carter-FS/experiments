@@ -394,10 +394,12 @@ archive_iv20 () {
 # text configurations and their overlap audit, exp19. In the thesis output directory
 # everything moves except the per-seed outputs of those non-EEG tasks and the text-
 # report and cohort-count files (THESIS_KEEP_RE); the archived thesis tables are
-# rebuilt by the analysis scripts after `verify` (plan step S10). DRY_RUN=1 lists.
-THESIS_KEEP_RE='^(hep_external_(summary|predictions|oov_breakdown)(\.csv|_sp-)|hep_external_exp19_|hep_reverse_|hep_focal_external_|metrics_decomposition|eeg_report_keywords|asm_first_prescription_counts)'
+# rebuilt by the analysis scripts after `verify` (plan step S10), so the thesis
+# checkout shows their deletions until then. Timestamped summaries that nothing reads
+# (exp5/exp6/exp10/exp12/exp13/exp14_results, exp15_smoke) stay. DRY_RUN=1 lists.
+THESIS_KEEP_RE='^(hep_external_(summary|predictions|oov_breakdown)(\.csv|_sp-)|hep_external_exp19_|hep_reverse_|hep_focal_external_|metrics_decomposition|eeg_report_keywords|asm_first_prescription_counts|\.gitkeep$)'
 archive_eeg () {
-    local out="${OUT%/}" dest guard thesis_out dry=0 n=0 f t p d rel
+    local out="${OUT%/}" dest guard thesis_out dry=0 n=0 f t p d rel add_rel i
     dest="$out/_archive_eeg_defect_20261009"; guard="$out/eeg_cache/eeg19_v2_alfred.pkl.meta.json"
     thesis_out="${ASM_ANALYSIS_OUTPUT_DIR:-$THESIS/analysis/output}"; thesis_out="${thesis_out%/}"
     [[ "${DRY_RUN:-0}" == 1 ]] && dry=1
@@ -463,11 +465,26 @@ archive_eeg () {
             return 2
         fi
     fi
-    local i
+    # destinations are checked before anything moves; a destination identical to its
+    # source is a move that was interrupted after the copy, and the source is dropped
+    local -a done_idx=()
     for i in "${!src[@]}"; do
-        if [[ -e "$dest/${rel_dest[$i]}" ]]; then echo "archive-eeg: $dest/${rel_dest[$i]} exists; not overwriting" >&2; return 1; fi
+        if [[ -e "$dest/${rel_dest[$i]}" ]]; then
+            if cmp -s "${src[$i]}" "$dest/${rel_dest[$i]}"; then done_idx+=("$i")
+            else echo "archive-eeg: $dest/${rel_dest[$i]} exists with different content; nothing was moved" >&2; return 1; fi
+        fi
+    done
+    for i in "${!src[@]}"; do
+        if [[ " ${done_idx[*]-} " == *" $i "* ]]; then
+            [[ $dry == 1 ]] || rm -f "${src[$i]}"
+            n=$((n + 1)); continue
+        fi
         if [[ $dry == 1 ]]; then echo "would move ${src[$i]} $dest/${rel_dest[$i]}"
-        else mkdir -p "$dest/$(dirname "${rel_dest[$i]}")" && mv "${src[$i]}" "$dest/${rel_dest[$i]}" || return 1; fi
+        else
+            # copy-then-rename, so an interruption across file systems leaves no half file at the destination
+            mkdir -p "$dest/$(dirname "${rel_dest[$i]}")" \
+                && mv "${src[$i]}" "$dest/${rel_dest[$i]}.partial" && mv "$dest/${rel_dest[$i]}.partial" "$dest/${rel_dest[$i]}" || return 1
+        fi
         n=$((n + 1))
     done
     if [[ $dry == 1 ]]; then echo "(dry run) would move $n file(s) to $dest"

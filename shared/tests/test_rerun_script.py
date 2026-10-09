@@ -175,3 +175,23 @@ def test_every_thesis_script_takes_the_output_dir_from_the_helper():
         if re.search(r'REPO_ROOT / "analysis" / "output"|resolve\(\)\.parent / "output"', path.read_text()):
             offenders.append(path.name)
     assert offenders == [], offenders
+
+
+def test_archive_eeg_checks_destinations_before_moving(tmp_path):
+    """A destination that already holds different content stops the run before any move;
+    one identical to its source (an interrupted earlier move) is treated as done."""
+    out, thesis, eeg, keep, guard = _eeg_tree(tmp_path)
+    env = {"OUT": out, "ASM_ANALYSIS_OUTPUT_DIR": thesis}
+    dest = out / "_archive_eeg_defect_20261009"
+    clash = dest / "exp9_predictions" / eeg[0].name
+    clash.parent.mkdir(parents=True)
+    clash.write_text("different")
+    res = run(["archive-eeg"], **env)
+    assert res.returncode == 1 and "different content" in res.stderr and all(f.exists() for f in eeg)
+    clash.write_text(eeg[0].read_text())             # identical: a move interrupted after the copy
+    res = run(["archive-eeg"], **env)
+    assert res.returncode == 0, res.stderr
+    assert not eeg[0].exists() and clash.exists() and (dest / ".complete").exists()
+    assert not any(p.name.endswith(".partial") for p in dest.rglob("*"))
+    (thesis / ".gitkeep").touch()
+    assert ".gitkeep" not in run(["archive-eeg"], DRY_RUN=1, OUT=out, ASM_ANALYSIS_OUTPUT_DIR=thesis).stdout
