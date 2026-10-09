@@ -8,6 +8,9 @@
 #   bash rerun_clean.sh smoke <task>      # dry run of a task (not exp19_*): 1 outer fold, 2 inner folds, 2 epochs; every output under /tmp (SMOKE_OUT)
 #   bash rerun_clean.sh verify            # gate: verify_oof + expected files + exp18 + HEP
 #   bash rerun_clean.sh archive-iv20      # move pre-2026-09-28 inner-split outputs aside (once)
+#   bash rerun_clean.sh archive-eeg       # move the EEG-dependent outputs and done markers of the
+#                                         # defective-cache runs aside (once, before the EEG rerun; DRY_RUN=1 lists)
+#   bash rerun_clean.sh pending-array     # slurm --array index list of the items not yet done (and not deferred)
 #   sbatch rerun_clean.slurm              # every item as a slurm array (see that file)
 #
 # PROTOCOL selects the selection protocol (docs/analysis_plan_clean_rerun_exp18.md):
@@ -38,7 +41,7 @@ set -uo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$REPO_DIR"
 PY="$REPO_DIR/.venv-others/bin/python"
-OUT=outputs
+OUT="${OUT:-outputs}"
 PROTOCOL="${PROTOCOL:-refit}"
 case "$PROTOCOL" in
     refit) SEL=rf5; CV_SEL=(--refit-folds 5); EXP18_SEL=(--refit-folds 5); EXP18_TAG=_rf5 ;;
@@ -93,15 +96,21 @@ EXP9_ABLATIONS=(baseline_simplecnn_transformer encoder_eegnet encoder_labram_scr
                 encoder_labram_pretrained_frozen encoder_reve_frozen encoder_frozen
                 aggregator_attention aggregator_maxpool aggregator_meanmax aggregator_lstm
                 aggregator_depth_0 aggregator_depth_1 aggregator_depth_4 embed_dim_64 embed_dim_128)
+# 2026-10-09 (EEG rerun on the version-2 cache): exp5 and exp6 run their EEG rows
+# only (5c, 6b; the other rows are unchanged since the previous run), and the
+# standalone REVE row is retired (exp9's encoder_reve_frozen replaces it).
 TASKS=(
     exp4 exp5 exp6 exp1 exp2 exp3
     exp7a exp7b exp7a_stratbatch exp15 exp16 exp17
     exp11_exp3a_transformer exp11_exp3a_meanmax exp11_exp6b_transformer exp11_exp6b_meanmax
     exp11_exp7a_transformer exp11_exp7a_meanmax
     "${EXP9_ABLATIONS[@]/#/exp9_}"
-    hep_forward hep_eeg hep_reverse hep_focal hep_reduced reve
+    hep_forward hep_eeg hep_reverse hep_focal hep_reduced
     exp18_Exp4a exp18_Exp5a exp18_Exp5b exp18_Exp5c exp18_Exp6b exp18_Exp7a exp18_noRMH
 )
+# Tasks whose outputs depend on the EEG cache (archive-eeg sets their previous
+# outputs and done markers aside). exp5 and exp6 are listed by their EEG rows.
+EEG_TASK_RE='^(exp2|exp3|exp5|exp6|exp7a|exp7b|exp7a_stratbatch|exp9_[a-z0-9_]+|exp11_[a-z0-9_]+|exp15|exp16|exp17|hep_eeg|hep_eeg_h12|hep_reduced|exp18_(h12_)?(Exp5c|Exp6b|Exp7a))$'
 if [[ "$PROTOCOL" == refit ]]; then
     TASKS+=(exp4_decomp hep_forward_h12 hep_eeg_h12 hep_reverse_h12
             exp18_h12_Exp4a exp18_h12_Exp5a exp18_h12_Exp5b exp18_h12_Exp5c exp18_h12_Exp6b exp18_h12_Exp7a)
@@ -134,8 +143,8 @@ run_task () {
               && balanced exp2_fusion --eeg-encoder eeg2vec --smiles-model chemberta --fusion mlp ;;
         exp3) balanced exp3_fusion ;;
         exp4) balanced exp4_baseline ;;
-        exp5) balanced exp5_clinical_fusion ;;
-        exp6) balanced exp6_clinical_triple ;;
+        exp5) balanced exp5_clinical_fusion --exp 5c ;;
+        exp6) balanced exp6_clinical_triple --exp 6b ;;
         exp11_*) local spec="${task#exp11_}"
                  balanced exp11_eeg_upgrade --base "${spec%%_*}" --aggregator "${spec#*_}" ;;
         exp9_*) "$PY" -m exp9_eeg_investigation.run_experiments --experiment "${task#exp9_}" \
@@ -184,8 +193,6 @@ run_task () {
         hep_forward_h12) (cd "$THESIS" && "$PY" analysis/hep_external_validation.py "${CV[@]}" "${H12[@]}") ;;
         hep_eeg_h12) (cd "$THESIS" && "$PY" -m analysis.hep_external_validation_eeg "${CV[@]}" "${H12[@]}") ;;
         hep_reverse_h12) (cd "$THESIS" && "$PY" analysis/hep_reverse_validation.py "${CV[@]}" "${H12[@]}") ;;
-        reve) (cd "$THESIS" && "$PY" analysis/reve_standalone.py "${CV[@]}" \
-                   --log-predictions "$(cd "$OUT" && pwd)/exp9_predictions") ;;
         exp19_tabular) exp19 --configs "${EXP19_TABULAR_CONFIGS[@]}" --seeds "$seed" ;;
         exp19_*) exp19 --configs "${EXP19_TEXT_CONFIGS[@]}" --encoders "${task#exp19_}" --seeds "$seed" ;;
         exp18_noRMH) exp18 --config Exp4a Exp5a Exp5b --exclude-rmh --seeds "$seed" ;;
@@ -270,8 +277,6 @@ preflight () {
         "'$PY' -m shared.eeg_features check --feature-set reve_v2 --cohort alfred > /dev/null"
     check "LaBraM features v2 (exp9 encoder_labram_pretrained_frozen, exp15; python -m shared.labram_pretrained extract)" \
         "'$PY' -m shared.eeg_features check --feature-set labram_v2 --cohort alfred > /dev/null"
-    check "legacy exp9 EEG2Vec OOF file (reve's 147-patient cohort)" \
-        "[[ -f $OUT/exp9_predictions/predictions_oof_exp9_encoder_eeg2vec.json ]]"
     check "logs/ directory (slurm opens its log files before the job starts)" "mkdir -p logs"
     if [[ -f "$EXP18_DUPLICATES" ]]; then
         echo "note    exp18 will exclude $(grep -c . "$EXP18_DUPLICATES") confirmed duplicate HEP1 pid(s)"
@@ -292,7 +297,7 @@ preflight () {
 # precomputed-feature models). rerun_clean_cpu.slurm runs them on the CPU
 # partition, outside the per-user GPU cap; the GPU arrays skip them once done.
 # A static filter of `list`, so array indices never move.
-CPU_TASK_RE='^(exp4|exp15|exp4_decomp|hep_forward|hep_forward_h12|hep_reverse|hep_reverse_h12|hep_focal|reve|exp18_(h12_)?(Exp4a|Exp5a|Exp5b|noRMH|S19[AD]_[a-z0-9_]+|LF_T5a-full|LF_T6a)|exp19_[a-z0-9_]+):'
+CPU_TASK_RE='^(exp4|exp15|exp4_decomp|exp9_encoder_(labram_pretrained_frozen|reve_frozen)|hep_forward|hep_forward_h12|hep_reverse|hep_reverse_h12|hep_focal|exp18_(h12_)?(Exp4a|Exp5a|Exp5b|noRMH|S19[AD]_[a-z0-9_]+|LF_T5a-full|LF_T6a)|exp19_[a-z0-9_]+):'
 
 # Deferred (2026-09-30): items nothing in the paper reports, skipped to fit the
 # per-user GPU cap. A deferred item exits at once without a done marker and
@@ -302,7 +307,7 @@ CPU_TASK_RE='^(exp4|exp15|exp4_decomp|hep_forward|hep_forward_h12|hep_reverse|he
 #   refit:          the harmonised-HEP1-label items for EEG configurations
 #   innersplit:     everything except the headline configurations (exp1-6,
 #                   exp7a) and the cheap CPU items (HEP forward/reverse/focal,
-#                   REVE, exp15, exp18 clinical/text, exp19)
+#                   exp15, exp18 clinical/text, exp19)
 DEFER_BOTH='exp9_(encoder_frozen|aggregator_[a-z0-9_]+|embed_dim_[0-9]+)|exp11_[a-z0-9_]+'
 case "$PROTOCOL" in
     refit) DEFER_RE="^(${DEFER_BOTH}|hep_eeg_h12|exp18_h12_(Exp5c|Exp6b|Exp7a)):" ;;
@@ -378,6 +383,56 @@ archive_iv20 () {
     echo "moved $n file(s)/dir(s) to $dest"
 }
 
+# Move the outputs of every EEG-dependent task written before the version-2 cache
+# (the 27-channel, unnormalised cache; the from-scratch "LaBraM") aside with their
+# done markers, so the EEG rerun regenerates them and `verify` cannot pass on a stale
+# file. Non-EEG outputs (exp1, exp4, exp5a/b, exp6a, HEP forward/reverse/focal, exp18
+# clinical/text, exp19) stay. The defective caches and version-1 feature files go too.
+archive_eeg () {
+    local dest="$OUT/_archive_eeg_defect_20261009" n=0 f t s p
+    local mv_cmd="mv -n"; [[ "${DRY_RUN:-0}" == 1 ]] && mv_cmd="echo would move"
+    [[ "${DRY_RUN:-0}" == 1 ]] || mkdir -p "$dest"
+    move () {  # $1 file, $2 relative destination
+        [[ "${DRY_RUN:-0}" == 1 ]] || mkdir -p "$dest/$(dirname "$2")"
+        $mv_cmd "$1" "$dest/$2" && n=$((n + 1))
+    }
+    for d in exp2_predictions exp3_predictions exp7_predictions exp9_predictions exp11_predictions \
+             exp15_predictions exp16_predictions exp17_predictions; do
+        [[ -d "$OUT/$d" ]] || continue
+        while IFS= read -r -d '' f; do move "$f" "${f#$OUT/}"; done < <(find -L "$OUT/$d" -maxdepth 1 -type f -print0)
+    done
+    while IFS= read -r -d '' f; do move "$f" "${f#$OUT/}"; done < <(find -L "$OUT/exp5_predictions" "$OUT/exp6_predictions" \
+        -maxdepth 1 -type f \( -name 'predictions_oof_exp5c_*' -o -name 'predictions_oof_exp6b_*' \) -print0 2>/dev/null)
+    while IFS= read -r -d '' f; do move "$f" "${f#$OUT/}"; done < <(find -L "$OUT/exp18_mixed_cohort" -maxdepth 1 -type f \
+        \( -name '*Exp5c*' -o -name '*Exp6b*' -o -name '*Exp7a*' \) -print0 2>/dev/null)
+    while IFS= read -r -d '' f; do move "$f" "${f#$OUT/}"; done < <(find -L "$OUT/eeg_cache" -maxdepth 1 -type f \
+        -name 'processed_eeg*' -print0 2>/dev/null)
+    while IFS= read -r -d '' f; do move "$f" "${f#$OUT/}"; done < <(find -L "$OUT" -maxdepth 1 -type f \
+        \( -name 'reve_features_alfred*' -o -name 'reve_features_hep*' \) -print0 2>/dev/null)
+    while IFS= read -r -d '' f; do move "$f" "thesis_output/${f##*/}"; done < <(find "$THESIS/analysis/output" -maxdepth 1 -type f \
+        \( -name 'hep_external_*_eeg*' -o -name 'hep_reduced_external_*' \) -print0 2>/dev/null)
+    for p in refit innersplit; do
+        [[ -d "$OUT/_clean_rerun_v2/$p" ]] || continue
+        for f in "$OUT/_clean_rerun_v2/$p"/*.done; do
+            [[ -f "$f" ]] || continue
+            t="${f##*/}"; t="${t%_s[0-9]*.done}"
+            grep -qE "$EEG_TASK_RE" <<< "$t" && move "$f" "${f#$OUT/}"
+        done
+    done
+    echo "${DRY_RUN:+(dry run) }moved $n file(s) to $dest"
+}
+
+# slurm --array index list of the items with no done marker (deferred items excluded).
+pending_array () {
+    local i=0 idx=() item
+    for item in $(items); do
+        if ! { [[ -f "$DONE/${item%%:*}_s${item##*:}.done" ]] && exp18_ready "${item%%:*}" "${item##*:}"; } \
+                && ! deferred "$item"; then idx+=("$i"); fi
+        i=$((i + 1))
+    done
+    (IFS=,; echo "${idx[*]}")
+}
+
 items () {
     local t s
     for t in "${TASKS[@]}"; do
@@ -397,6 +452,8 @@ case "${1:-}" in
     preflight) preflight ;;
     verify) verify ;;
     archive-iv20) archive_iv20 ;;
+    archive-eeg) archive_eeg ;;
+    pending-array) pending_array ;;
     smoke)
         # An end-to-end dry run of one task on this host's data: first outer fold,
         # two inner folds, two epochs (shared.cv_splits --smoke; exp18's own --smoke),
@@ -431,7 +488,7 @@ case "${1:-}" in
         echo "== smoke $task (every output under $SMOKE_OUT) =="
         run_task "$task" 42; rc=$?
         exit $rc ;;
-    "") echo "usage: [PROTOCOL=refit|innersplit] bash rerun_clean.sh {preflight|list|verify|archive-iv20|smoke <task>|<task>:<seed>}" >&2; exit 2 ;;
+    "") echo "usage: [PROTOCOL=refit|innersplit] bash rerun_clean.sh {preflight|list|list-cpu|verify|archive-iv20|archive-eeg|pending-array|smoke <task>|<task>:<seed>}" >&2; exit 2 ;;
     *:*)
         task="${1%%:*}"; seed="${1##*:}"
         marker="$DONE/${task}_s${seed}.done"

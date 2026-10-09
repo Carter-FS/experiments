@@ -6,12 +6,12 @@
 # every item takes a lock, so whichever array reaches an item first runs it
 # and the other skips it (a finished item is skipped by its done marker).
 #
-#     PROTOCOL=refit bash rerun_clean.sh list-cpu | cat -n     # index <-> task (185 items)
+#     PROTOCOL=refit bash rerun_clean.sh list-cpu | cat -n     # index <-> task (190 items)
 #     sbatch --export=ALL,PROTOCOL=refit rerun_clean_cpu.slurm
-#     sbatch --export=ALL,PROTOCOL=innersplit --array=0-114%24 rerun_clean_cpu.slurm
+#     sbatch --export=ALL,PROTOCOL=innersplit --array=0-119%24 rerun_clean_cpu.slurm
 #SBATCH --job-name=clean_rerun_cpu
 #SBATCH --partition=comp
-#SBATCH --array=0-184%24
+#SBATCH --array=0-189%24
 #SBATCH --time=3-00:00:00
 #SBATCH --mem=32G
 #SBATCH --cpus-per-task=8
