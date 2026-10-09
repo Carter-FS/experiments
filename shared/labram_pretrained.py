@@ -34,6 +34,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Dict, Optional, Sequence, Tuple
 
@@ -67,6 +68,19 @@ EXPECTED_N_PARAMS = 5_818_936
 # order equals the official ``standard_1020`` list position for position.
 CACHE_TO_LABRAM_NAME = {"T7": "T3", "T8": "T4", "P7": "T5", "P8": "T6"}
 LABRAM_CH_NAMES: Tuple[str, ...] = tuple(CACHE_TO_LABRAM_NAME.get(c, c) for c in CH_NAMES)
+
+# Constructor arguments of the 19-channel LaBraM-base (braindecode ``Labram``); the
+# export carries the same dict so a vendored copy rebuilds the identical architecture.
+MODEL_KWARGS = {
+    "n_chans": N_CHANNELS, "n_times": SAMPLES_PER_WINDOW, "sfreq": TARGET_SFREQ, "n_outputs": 0,
+    "patch_size": PATCH_SIZE, "embed_dim": EMBED_DIM, "num_layers": 12, "num_heads": 10, "mlp_ratio": 4.0,
+    "qkv_bias": False, "init_values": 0.1, "conv_in_channels": 1, "conv_out_channels": 8,
+    "use_abs_pos_emb": True, "neural_tokenizer": True, "learned_patcher": False,
+    "drop_prob": 0.0, "attn_drop_prob": 0.0, "drop_path_prob": 0.0,
+}
+# Official checkpoint tensors that belong to pretraining only (tokenizer targets and the
+# symmetric-masking projection); every other official tensor must match a hub tensor.
+OFFICIAL_PRETRAINING_ONLY = ("lm_head.", "logit_scale", "projection_head.", "student.lm_head.", "student.mask_token")
 
 OUT_DIR = EXPERIMENTS_ROOT / "outputs"
 FEATURE_PATHS = {"alfred": OUT_DIR / "labram_features_v2_alfred.npz", "hep": OUT_DIR / "labram_features_v2_hep.npz"}
@@ -120,8 +134,8 @@ def build_model(pooling: str, state: Optional[Dict[str, torch.Tensor]] = None):
     if pooling not in ("mean", "cls"):
         raise ValueError(f"pooling must be 'mean' or 'cls', not {pooling!r}")
     state = adapt_state_dict(hub_state_dict() if state is None else state)
-    model = Labram(n_chans=N_CHANNELS, n_times=SAMPLES_PER_WINDOW, sfreq=TARGET_SFREQ, n_outputs=0,
-                   use_mean_pooling=(pooling == "mean"), chs_info=[{"ch_name": c} for c in LABRAM_CH_NAMES])
+    model = Labram(**MODEL_KWARGS, use_mean_pooling=(pooling == "mean"),
+                   chs_info=[{"ch_name": c} for c in LABRAM_CH_NAMES])
     missing, unexpected = model.load_state_dict(state, strict=False)
     allowed_missing = {"fc_norm.weight", "fc_norm.bias"} if pooling == "mean" else set()
     allowed_unexpected = {"norm.weight", "norm.bias"} if pooling == "mean" else set()
@@ -150,11 +164,21 @@ def window_features(model, windows: torch.Tensor, batch_size: int = 64) -> torch
     return torch.cat(out) if out else torch.zeros((0, EMBED_DIM))
 
 
+def input_chans() -> list:
+    """Rows of the pretrained position embedding for ``LABRAM_CH_NAMES``: the official
+    ``utils.get_input_chans`` convention (0 for [CLS], then index in ``standard_1020`` + 1),
+    taken from braindecode's canonical list, which equals ``standard_1020`` position for
+    position."""
+    from braindecode.models.labram import LABRAM_CHANNEL_ORDER
+
+    canonical = [n.upper() for n in LABRAM_CHANNEL_ORDER]
+    return [0] + [canonical.index(n.upper()) + 1 for n in LABRAM_CH_NAMES]
+
+
 def _source_cache_provenance(cache_path: Path) -> dict:
     """Version, cohort, counts and build time of the cache the features come from."""
     info = cache_info(cache_path)
-    keep = ("version", "cohort", "n_recordings", "n_channels", "ch_names", "sfreq", "built_at",
-            "n_edf_files", "n_skipped", "skipped")
+    keep = ("version", "cohort", "n_channels", "ch_names", "sfreq", "built_at", "n_edf_files", "n_skipped", "skipped")
     return {k: info[k] for k in keep if k in info}
 
 
@@ -176,6 +200,9 @@ def extract_features(cache_path: Path, out_path: Path, device: str = "cpu", batc
     for i, pid in enumerate(pids):
         windows, padding_mask = eeg[pid]
         valid_idx = np.flatnonzero(~padding_mask)
+        if not np.array_equal(valid_idx, np.arange(len(valid_idx))):
+            # consumers rebuild the mask as ``j >= valid_window_counts``
+            raise ValueError(f"recording {i} has padded windows before valid ones")
         valid_counts[i] = len(valid_idx)
         if not len(valid_idx):
             continue
@@ -208,37 +235,64 @@ def extract_features(cache_path: Path, out_path: Path, device: str = "cpu", batc
     return meta
 
 
+def official_name(hub_key: str) -> str:
+    """The official ``labram-base.pth`` key holding the tensor behind a hub key."""
+    if hub_key == "position_embedding":
+        return "student.pos_embed"
+    if hub_key == "temporal_embedding":
+        return "student.time_embed"
+    key = hub_key.replace("patch_embed.temporal_conv.", "patch_embed.")
+    key = re.sub(r"^(blocks\.\d+\.mlp\.)0\.", r"\1fc1.", key)
+    key = re.sub(r"^(blocks\.\d+\.mlp\.)2\.", r"\1fc2.", key)
+    return "student." + key
+
+
 def verify_against_official(checkpoint: Path = OFFICIAL_CHECKPOINT_PATH,
                             state: Optional[Dict[str, torch.Tensor]] = None) -> dict:
-    """Check that every hub tensor is numerically identical to an official checkpoint
-    tensor of the same shape (names differ between the two code bases)."""
+    """Check that the hub weights are the official encoder weights: every hub tensor is
+    bit-identical to the official tensor of the corresponding name, the mapping is one to
+    one, and the official tensors left over are the pretraining-only ones."""
     checkpoint = Path(checkpoint)
     digest = _sha256(checkpoint)
     if digest != OFFICIAL_CHECKPOINT_SHA256:
         raise RuntimeError(f"{checkpoint} has sha256 {digest}, expected {OFFICIAL_CHECKPOINT_SHA256}")
     official = torch.load(checkpoint, map_location="cpu", weights_only=False)
     official = official.get("model", official)
-    by_shape: Dict[tuple, list] = {}
-    for k, v in official.items():
-        by_shape.setdefault(tuple(v.shape), []).append(v)
     state = hub_state_dict() if state is None else state
-    unmatched = [k for k, v in state.items()
-                 if not any(torch.equal(v.float(), o.float()) for o in by_shape.get(tuple(v.shape), []))]
-    if unmatched:
-        raise RuntimeError(f"{len(unmatched)} hub tensors have no identical official tensor: {unmatched[:5]}")
-    return {"hub_tensors": len(state), "identical": len(state) - len(unmatched), "checkpoint_sha256": digest}
+    mapping = {k: official_name(k) for k in state}
+    missing = sorted(k for k, o in mapping.items() if o not in official)
+    if missing:
+        raise RuntimeError(f"{len(missing)} hub tensors have no official counterpart: {missing[:5]}")
+    if len(set(mapping.values())) != len(mapping):
+        raise RuntimeError("hub-to-official name mapping is not one to one")
+    different = sorted(k for k, o in mapping.items()
+                       if state[k].shape != official[o].shape or not torch.equal(state[k].float(), official[o].float()))
+    if different:
+        raise RuntimeError(f"{len(different)} hub tensors differ from the official checkpoint: {different[:5]}")
+    unused = sorted(set(official) - set(mapping.values()))
+    stray = [k for k in unused if not k.startswith(OFFICIAL_PRETRAINING_ONLY)]
+    if stray:
+        raise RuntimeError(f"official encoder tensors with no hub counterpart: {stray[:5]}")
+    return {"hub_tensors": len(state), "identical": len(state), "unused_official": unused, "checkpoint_sha256": digest}
 
 
 def export_weights(out_path: Path = WEIGHTS_19CH_PATH, state: Optional[Dict[str, torch.Tensor]] = None) -> Path:
-    """The adapted 19-channel state dict for the vendored model used in training."""
+    """The adapted 19-channel state dict plus the constructor arguments, embedding rows
+    and pooling conventions a vendored copy of the architecture needs."""
     adapted = adapt_state_dict(hub_state_dict() if state is None else state)
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({"state_dict": adapted, "hub_repo": HUB_REPO, "hub_revision": HUB_REVISION,
-                "hub_safetensors_sha256": HUB_SAFETENSORS_SHA256, "n_patches": N_PATCHES,
-                "n_chans": N_CHANNELS, "n_times": SAMPLES_PER_WINDOW, "sfreq": TARGET_SFREQ,
-                "cache_ch_names": list(CH_NAMES), "labram_ch_names": list(LABRAM_CH_NAMES),
-                "input_convention": INPUT_CONVENTION}, out_path)
+    torch.save({
+        "state_dict": adapted, "hub_repo": HUB_REPO, "hub_revision": HUB_REVISION,
+        "hub_safetensors_sha256": HUB_SAFETENSORS_SHA256, "n_patches": N_PATCHES,
+        "model_kwargs": dict(MODEL_KWARGS), "input_chans": input_chans(),
+        "cache_ch_names": list(CH_NAMES), "labram_ch_names": list(LABRAM_CH_NAMES),
+        "input_convention": INPUT_CONVENTION,
+        # with use_mean_pooling=True the pretrained final norm is unused and fc_norm starts fresh
+        "pooling": {"mean": {"use_mean_pooling": True, "drop_keys": ["norm.weight", "norm.bias"],
+                             "fresh_keys": ["fc_norm.weight", "fc_norm.bias"]},
+                    "cls": {"use_mean_pooling": False, "drop_keys": [], "fresh_keys": []}},
+    }, out_path)
     return out_path
 
 

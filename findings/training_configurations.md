@@ -69,8 +69,10 @@ names T7/T8/P7/P8 (positions 37, 45, 59, 67). The official clinical fine-tuning 
 four temporal channels of the cache (stored as T7/T8/P7/P8) are given to LaBraM under
 the legacy names; the other 15 names are unchanged. Duong's repository has no LaBraM
 path to compare with. braindecode's canonical list matches `standard_1020` position
-for position over its 128 entries, and the hub weights are tensor-identical to the
-official `labram-base.pth` (221 of 221 tensors). Per-window features are the mean over
+for position over its 128 entries, and each of the 221 hub tensors is bit-identical to
+the official `labram-base.pth` tensor of the corresponding name (`student.*` encoder
+weights; the eight official tensors left over are the pretraining-only tokenizer heads,
+logit scale, mask token and projection head). Per-window features are the mean over
 the patch tokens through a parameter-free LayerNorm (`use_mean_pooling=True`, the
 official fine-tuning default) with the [CLS] token stored alongside.
 
