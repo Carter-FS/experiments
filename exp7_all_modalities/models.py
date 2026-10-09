@@ -25,7 +25,7 @@ from .config import (
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from exp2_fusion.models.eeg_encoders import get_eeg_encoder
+from exp2_fusion.models.eeg_encoders import flatten_windows, get_eeg_encoder
 from exp2_fusion.models.eeg_transformer import EEGWindowTransformer
 from shared.fuse_moe import FuseMoE
 
@@ -339,7 +339,7 @@ class QuadFusionMoE(nn.Module):
         Returns:
             Tuple of (logits, aux_loss)
         """
-        batch_size, num_windows = eeg_windows.shape[:2]  # per-window shape: (channels, time) or (dim,)
+        windows_flat, batch_size, num_windows = flatten_windows(eeg_windows)
 
         # Project clinical
         clinical_proj = self.clinical_proj(clinical)  # (batch, hidden_dim)
@@ -348,7 +348,6 @@ class QuadFusionMoE(nn.Module):
         text_proj = self.text_proj(text)  # (batch, hidden_dim)
 
         # Encode EEG windows
-        windows_flat = eeg_windows.reshape(batch_size * num_windows, *eeg_windows.shape[2:])
         window_embeddings = self.encode_windows_chunked(windows_flat, self.window_chunk_size)
         embed_dim = window_embeddings.shape[-1]
         window_embeddings = window_embeddings.reshape(batch_size, num_windows, embed_dim)

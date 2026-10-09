@@ -19,7 +19,8 @@ Modifications relative to upstream, and nothing else:
 1. ``EEGModuleMixin`` (Hugging Face Hub integration and the docstring metaclass) is
    replaced by ``_SignalParamsMixin`` below, which carries the same constructor checks
    and the ``n_outputs``, ``n_chans``, ``chs_info``, ``n_times``, ``input_window_seconds``
-   and ``sfreq`` properties; the Hub-only ``chs_info`` deserialisation branch is omitted.
+   and ``sfreq`` properties; the Hub-only ``chs_info`` deserialisation branch and the
+   ``_hub_mixin_config`` attribute-copy loop of its constructor are omitted.
 2. ``rescale_parameter`` (``braindecode/functional/initialization.py``), ``drop_path``
    (``braindecode/functional/functions.py``), ``DropPath`` (``braindecode/modules/layers.py``)
    and ``MLP`` (``braindecode/modules/blocks.py``) are inlined from the same release.
@@ -125,6 +126,17 @@ def drop_path(
     -------
     torch.Tensor
         output tensor
+
+    Notes from Ross Wightman:
+    (when applied in main path of residual blocks)
+    This is the same as the DropConnect impl I created for EfficientNet,
+    etc. networks, however,
+    the original name is misleading as 'Drop Connect' is a different form
+    of dropout in a separate paper...
+    See discussion : https://github.com/tensorflow/tpu/issues/494#issuecomment-532968956
+    ... I've opted for changing the layer and argument names to 'drop path'
+    rather than mix DropConnect as a layer name and use
+    'survival rate' as the argument.
     """
     if drop_prob == 0.0 or not training:
         return x
@@ -152,6 +164,7 @@ class DropPath(nn.Module):
     -----
     Code copied and modified from VISSL facebookresearch:
     https://github.com/facebookresearch/vissl/blob/0b5d6a94437bc00baed112ca90c9d78c6ccfbafb/vissl/models/model_helpers.py#L676
+
     All rights reserved.
 
     THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
@@ -161,6 +174,17 @@ class DropPath(nn.Module):
     LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
     OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
     SOFTWARE.
+
+    Examples
+    --------
+    >>> import torch
+    >>> from braindecode.modules import DropPath
+    >>> module = DropPath(drop_prob=0.2)
+    >>> module.train()
+    >>> inputs = torch.randn(2, 3, 10)
+    >>> outputs = module(inputs)
+    >>> outputs.shape
+    torch.Size([2, 3, 10])
     """
 
     def __init__(self, drop_prob=None):
@@ -172,11 +196,21 @@ class DropPath(nn.Module):
 
     # Utility function to print DropPath module
     def extra_repr(self) -> str:
-        return "p={}".format(self.drop_prob)
+        return f"p={self.drop_prob}"
 
 
 class MLP(nn.Sequential):
     r"""Multilayer Perceptron (MLP) with GELU activation and optional dropout.
+
+    Also known as fully connected feedforward network, an MLP is a sequence of
+    non-linear parametric functions
+
+    .. math:: h_{i + 1} = a_{i + 1}(h_i W_{i + 1}^T + b_{i + 1}),
+
+    over feature vectors :math:`h_i`, with the input and output feature vectors
+    :math:`x = h_0` and :math:`y = h_L`, respectively. The non-linear functions
+    :math:`a_i` are called activation functions. The trainable parameters of an
+    MLP are its weights and biases :math:`\\phi = \{W_i, b_i | i = 1, \dots, L\}`.
 
     Parameters
     ----------
@@ -184,14 +218,28 @@ class MLP(nn.Sequential):
         Number of input features.
     hidden_features: Sequential[int] (default=None)
         Number of hidden features, if None, set to in_features.
+        You can increase the size of MLP just passing more int in the
+        hidden features vector. The model size increase follow the
+        rule 2n (hidden layers)+2 (in and out layers)
     out_features: int (default=None)
         Number of output features, if None, set to in_features.
-    activation: nn.GELU (default)
-        The activation function constructor.
+    act_layer: nn.GELU (default)
+        The activation function constructor. If ``None``, use
+        :class:`torch.nn.GELU` instead.
     drop: float (default=0.0)
         Dropout rate.
     normalize: bool (default=False)
         Whether to apply layer normalization.
+
+    Examples
+    --------
+    >>> import torch
+    >>> from braindecode.modules import MLP
+    >>> module = MLP(in_features=32, hidden_features=(64,), out_features=16)
+    >>> inputs = torch.randn(2, 10, 32)
+    >>> outputs = module(inputs)
+    >>> outputs.shape
+    torch.Size([2, 10, 16])
     """
 
     def __init__(

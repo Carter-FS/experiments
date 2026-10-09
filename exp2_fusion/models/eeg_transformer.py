@@ -10,6 +10,8 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
+from .eeg_encoders import flatten_windows
+
 
 class PositionalEncoding(nn.Module):
     """Sinusoidal positional encoding for sequence position information."""
@@ -197,10 +199,9 @@ class EEGEncoder(nn.Module):
         Returns:
             Patient embedding of shape (batch, output_dim).
         """
-        batch_size, num_windows = windows.shape[:2]  # per-window shape: (channels, time) or (dim,)
+        windows_flat, batch_size, num_windows = flatten_windows(windows)
 
         # Flatten batch and windows for encoder
-        windows_flat = windows.reshape(batch_size * num_windows, *windows.shape[2:])
 
         # Encode all windows
         window_embeddings = self.window_encoder(windows_flat)

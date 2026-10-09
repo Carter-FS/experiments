@@ -64,7 +64,7 @@ class AblationModel(nn.Module):
         """Initialise ablation model.
 
         Args:
-            encoder_type: Type of window encoder ('simplecnn', 'eegnet', 'labram', 'eeg2vec').
+            encoder_type: Type of window encoder (any of exp2_fusion.models.eeg_encoders.ENCODER_TYPES).
             aggregator_type: Type of aggregator ('transformer', 'attention', 'maxpool', 'lstm').
             n_channels: Number of EEG channels.
             n_times: Number of time samples per window.

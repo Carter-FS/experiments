@@ -411,7 +411,7 @@ class PretrainedLaBraMEncoder(nn.Module):
             raise FileNotFoundError(
                 f"{path} not found. Run `python -m shared.labram_pretrained export-weights` in .venv-reve first."
             )
-        payload = torch.load(path, map_location="cpu", weights_only=False)
+        payload = torch.load(path, map_location="cpu", weights_only=True)  # tensors, dicts, lists and scalars only
         model_kwargs = dict(payload["model_kwargs"])
         if (model_kwargs["n_chans"], model_kwargs["n_times"]) != (n_channels, n_times):
             raise ValueError(

@@ -9,6 +9,7 @@ so the tests that need them skip where that file is absent.
 """
 from __future__ import annotations
 
+import inspect
 import json
 import subprocess
 import sys
@@ -25,9 +26,11 @@ from shared.vendor.labram import Labram, _SignalParamsMixin
 REPO = Path(__file__).resolve().parents[2]
 FIXTURE = Path(__file__).with_name("fixtures") / "labram_19ch_reference.npz"
 # The fixture was recorded under a different torch release (2.12 against 2.9.1 here), whose
-# fp32 kernels accumulate in a different order; through 12 transformer blocks the outputs
-# then agree to about 1e-5 of their scale, so each output is compared against the largest
-# magnitude of its reference (an element-wise relative test fails on entries near zero).
+# fp32 kernels accumulate in a different order. Under the fixture's own torch the vendored
+# and upstream models are bit-identical; under torch 2.9.1 the measured error is 1.4e-7 of
+# scale for the mean feature and 3.9e-6 for the [CLS] feature, so each output is compared
+# against the largest magnitude of its reference at 1e-5 (an element-wise relative test
+# fails on entries near zero).
 SCALE_TOL = 1e-5
 TOL = {"rtol": 1e-4, "atol": 1e-5}  # same-environment comparisons
 
@@ -51,7 +54,7 @@ def reference():
 def payload():
     if not LP.WEIGHTS_19CH_PATH.exists():
         pytest.skip(f"no exported weights at {LP.WEIGHTS_19CH_PATH}")
-    return torch.load(LP.WEIGHTS_19CH_PATH, map_location="cpu", weights_only=False)
+    return torch.load(LP.WEIGHTS_19CH_PATH, map_location="cpu", weights_only=True)
 
 
 def _build(payload, pooling):
@@ -218,6 +221,50 @@ def test_fusion_models_accept_precomputed_features():
         logits, _aux = moe(eeg, mask, smiles)
         assert logits.shape == (2, 2)
         assert abl(eeg, mask, smiles).shape == (2, 2)
+
+
+def _dim(cls, name, default):
+    param = inspect.signature(cls.__init__).parameters.get(name)
+    return default if param is None or param.default is inspect.Parameter.empty else param.default
+
+
+@pytest.mark.parametrize("spec", [
+    ("exp3_fusion.models.triple_mlp", "TripleModalityMLP", {"eeg_embed_dim": 512}, "text,eeg,mask,smiles", False),
+    ("exp3_fusion.models.triple_fusemoe", "TripleModalityFuseMoE", {"eeg_embed_dim": 512}, "text,eeg,mask,smiles", True),
+    ("exp5_clinical_fusion.models", "ClinicalEEGFusion", {}, "encode", False),
+    ("exp6_clinical_triple.models", "ClinicalSMILESEEGFusion", {}, "encode", False),
+    ("exp7_all_modalities.models", "QuadFusionMLP", {}, "encode", False),
+    ("exp7_all_modalities.models", "QuadFusionMoE", {"eeg_embed_dim": 512}, "clinical,text,eeg,mask,smiles", True),
+    ("exp11_eeg_upgrade.models", "ClinicalEEGFusionv2", {"eeg_embed_dim": 512}, "clinical,smiles,eeg,mask", False),
+    ("exp11_eeg_upgrade.models", "QuadMLPv2", {"eeg_embed_dim": 512}, "clinical,text,eeg,mask,smiles", False),
+])
+def test_every_fusion_model_accepts_precomputed_features(spec):
+    """Stored per-window features (batch, windows, dim) go through each model's EEG path.
+    Models whose EEG width is fixed at 256 take 256-wide features; the others take 512."""
+    import importlib
+    module, name, kwargs, call, returns_tuple = spec
+    cls = getattr(importlib.import_module(module), name)
+    model = cls(eeg_encoder_type="precomputed", window_chunk_size=120, **kwargs).eval()
+    width = kwargs.get("eeg_embed_dim", 256)
+    eeg = torch.randn(2, 120, width)
+    mask = torch.zeros(2, 120, dtype=torch.bool)
+    mask[1, 90:] = True
+    inputs = {"eeg": eeg, "mask": mask, "text": torch.randn(2, _dim(cls, "text_dim", 768)),
+              "smiles": torch.randn(2, _dim(cls, "smiles_dim", 768)), "clinical": torch.randn(2, _dim(cls, "clinical_dim", 23))}
+    with torch.no_grad():
+        if call == "encode":
+            out = model.encode_eeg_windows(eeg, mask)
+            assert out.shape[0] == 2 and out.ndim == 2
+        else:
+            out = model(*[inputs[k] for k in call.split(",")])
+            logits = out[0] if returns_tuple else out
+            assert logits.shape == (2, 2)
+    with pytest.raises(ValueError, match="precomputed features"):
+        with torch.no_grad():
+            if call == "encode":
+                model.encode_eeg_windows(torch.randn(2, 120, 19, 2000), mask)
+            else:
+                model(*[torch.randn(2, 120, 19, 2000) if k == "eeg" else inputs[k] for k in call.split(",")])
 
 
 def test_unknown_encoder_type_lists_the_options():

@@ -7,7 +7,7 @@ import torch.nn as nn
 from exp2_fusion.config import N_CHANNELS
 import torch.nn.functional as F
 
-from .eeg_encoders import get_eeg_encoder
+from .eeg_encoders import flatten_windows, get_eeg_encoder
 from .eeg_transformer import EEGWindowTransformer
 from shared.fuse_moe import FuseMoE
 
@@ -112,10 +112,9 @@ class EEGSMILESMLPFusion(nn.Module):
         Returns:
             Logits of shape (batch, num_classes)
         """
-        batch_size, num_windows = eeg_windows.shape[:2]  # per-window shape: (channels, time) or (dim,)
+        windows_flat, batch_size, num_windows = flatten_windows(eeg_windows)
 
         # Encode EEG windows (in chunks to save memory)
-        windows_flat = eeg_windows.reshape(batch_size * num_windows, *eeg_windows.shape[2:])
         window_embeddings = self.encode_windows_chunked(windows_flat, chunk_size=self.window_chunk_size)
         embed_dim = window_embeddings.shape[-1]
         window_embeddings = window_embeddings.view(batch_size, num_windows, embed_dim)
@@ -246,10 +245,9 @@ class EEGSMILESFuseMoE(nn.Module):
         Returns:
             Tuple of (logits, aux_loss)
         """
-        batch_size, num_windows = eeg_windows.shape[:2]  # per-window shape: (channels, time) or (dim,)
+        windows_flat, batch_size, num_windows = flatten_windows(eeg_windows)
 
         # Encode EEG windows (in chunks to save memory)
-        windows_flat = eeg_windows.reshape(batch_size * num_windows, *eeg_windows.shape[2:])
         window_embeddings = self.encode_windows_chunked(windows_flat, chunk_size=self.window_chunk_size)
         embed_dim = window_embeddings.shape[-1]
         window_embeddings = window_embeddings.view(batch_size, num_windows, embed_dim)

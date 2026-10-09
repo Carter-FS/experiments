@@ -8,7 +8,7 @@ from exp2_fusion.config import N_CHANNELS
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from exp2_fusion.models.eeg_encoders import get_eeg_encoder
+from exp2_fusion.models.eeg_encoders import flatten_windows, get_eeg_encoder
 from exp2_fusion.models.eeg_transformer import EEGWindowTransformer
 
 
@@ -121,13 +121,12 @@ class TripleModalityMLP(nn.Module):
         Returns:
             Logits of shape (batch, num_classes)
         """
-        batch_size, num_windows = eeg_windows.shape[:2]  # per-window shape: (channels, time) or (dim,)
+        windows_flat, batch_size, num_windows = flatten_windows(eeg_windows)
 
         # Project text
         text_proj = self.text_proj(text_emb)
 
         # Encode EEG windows
-        windows_flat = eeg_windows.reshape(batch_size * num_windows, *eeg_windows.shape[2:])
         window_embeddings = self.encode_windows_chunked(windows_flat, self.window_chunk_size)
         embed_dim = window_embeddings.shape[-1]
         window_embeddings = window_embeddings.view(batch_size, num_windows, embed_dim)

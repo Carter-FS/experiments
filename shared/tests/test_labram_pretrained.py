@@ -180,7 +180,7 @@ def test_extract_refuses_a_legacy_cache(tmp_path, hub_state):
 
 def test_export_weights_round_trip(tmp_path, hub_state):
     path = LP.export_weights(tmp_path / "labram_base_19ch.pt", hub_state)
-    saved = torch.load(path, map_location="cpu", weights_only=False)
+    saved = torch.load(path, map_location="cpu", weights_only=True)
     assert saved["hub_revision"] == LP.HUB_REVISION and saved["n_patches"] == LP.N_PATCHES
     assert saved["model_kwargs"]["n_chans"] == 19 and saved["model_kwargs"]["n_times"] == 2000
     assert saved["model_kwargs"] == LP.MODEL_KWARGS and saved["input_convention"] == "labram"
