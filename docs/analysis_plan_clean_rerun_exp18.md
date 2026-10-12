@@ -775,3 +775,26 @@ coding). `shared/verify_oof.py` requires these counts.
   the HEP scripts' CSV outputs, which the gate does not read, are covered by the
   preflight checks that no EEG-dependent output or done marker predates the
   version-2 cache.
+
+### C.6 (2026-10-12, after the EEG rerun) Corrections and the state of the deferred items
+
+- Rerun outcome: the 99 GPU and 15 CPU work items completed on M3 (jobs 60865169 and
+  60865170); 2026 of 2026 prediction files pass the gate; 279 of 373 refit items done,
+  94 deferred.
+- Correction to C.4: the exp9 aggregator's output is 256 for five arms but 128 for
+  `encoder_labram_scratch` (`output_dim` 128; two transformer layers, four heads,
+  128-wide embedding, batch size 1, as in the earlier `encoder_labram` arm). The scratch
+  LaBraM row is a reduced configuration, not a from-scratch counterpart of the 12-layer
+  pretrained model; the Supplement states this beside the encoder table.
+- The inner-split protocol (the secondary protocol of B.2) was not rerun for any
+  EEG-dependent item after the input correction. `rerun_clean.sh` defers every
+  EEG-dependent item under `PROTOCOL=innersplit` (verify counts them as deferred, not
+  missing); the Supplement's pre-registered-protocol table carries those rows as not
+  run, and the refit versus inner-split comparison in the paper covers the 169
+  configurations without EEG recordings.
+- The fine-tuned LaBraM-base arm of C.4 has not been run as of 2026-10-12. The encoder
+  type for it exists (`labram_pretrained`); no exp9 arm uses it.
+- The exp9 aggregator and embedding-size ablations, the exp11 grid and the
+  harmonised-HEP1-label EEG items remain deferred as in C.5. Their outputs from the
+  superseded cache were archived with the other EEG outputs on 2026-10-12 and are not
+  reported.

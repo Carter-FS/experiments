@@ -309,13 +309,16 @@ CPU_TASK_RE='^(exp4|exp15|exp4_decomp|exp9_encoder_(labram_pretrained_frozen|rev
 #   both protocols: exp9 ablations other than the four encoders compared in
 #                   the paper, and exp11 (EEG2Vec-128 variants, an appendix aside)
 #   refit:          the harmonised-HEP1-label items for EEG configurations
-#   innersplit:     everything except the headline configurations (exp1-6,
-#                   exp7a) and the cheap CPU items (HEP forward/reverse/focal,
-#                   exp15, exp18 clinical/text, exp19)
+#   innersplit:     everything except the headline configurations without EEG
+#                   (exp1, exp4) and the cheap CPU items (HEP forward/reverse/
+#                   focal, exp18 clinical/text, exp19). Since the EEG input
+#                   correction (Addendum C.6, 2026-10-12) every EEG-dependent
+#                   item is deferred under this protocol: the EEG items were
+#                   rerun under the refit protocol only.
 DEFER_BOTH='exp9_(encoder_frozen|aggregator_[a-z0-9_]+|embed_dim_[0-9]+)|exp11_[a-z0-9_]+'
 case "$PROTOCOL" in
     refit) DEFER_RE="^(${DEFER_BOTH}|hep_eeg_h12|exp18_h12_(Exp5c|Exp6b|Exp7a)):" ;;
-    innersplit) DEFER_RE="^(${DEFER_BOTH}|exp9_[a-z0-9_]+|exp7b|exp7a_stratbatch|exp16|exp17|hep_eeg|hep_reduced|exp18_(Exp5c|Exp6b|Exp7a)):" ;;
+    innersplit) DEFER_RE="^(${DEFER_BOTH}|exp2|exp3|exp5|exp6|exp7a|exp7b|exp7a_stratbatch|exp9_[a-z0-9_]+|exp15|exp16|exp17|hep_eeg|hep_reduced|exp18_(Exp5c|Exp6b|Exp7a)):" ;;
 esac
 deferred () { [[ "${RUN_DEFERRED:-0}" != 1 ]] && grep -qE "$DEFER_RE" <<< "$1"; }
 
@@ -330,7 +333,7 @@ expected_files () {
 filter_deferred_files () {
     if [[ "${RUN_DEFERRED:-0}" == 1 ]]; then cat; return; fi
     local drop='^exp11_predictions/|^exp9_predictions/predictions_oof_exp9_(encoder_frozen|aggregator_|embed_dim_)'
-    [[ "$PROTOCOL" == innersplit ]] && drop="$drop"'|^exp9_predictions/predictions_oof_exp9_(baseline|encoder_(eegnet|labram|eeg2vec|reve))|^exp7_predictions/predictions_oof_(7b|asmstratbatch)|^exp16_predictions/|^exp17_predictions/'
+    [[ "$PROTOCOL" == innersplit ]] && drop="$drop"'|^exp2_predictions/|^exp3_predictions/|^exp5_predictions/predictions_oof_exp5c_|^exp6_predictions/predictions_oof_exp6b_|^exp7_predictions/|^exp9_predictions/|^exp15_predictions/|^exp16_predictions/|^exp17_predictions/'
     grep -vE "$drop"
 }
 

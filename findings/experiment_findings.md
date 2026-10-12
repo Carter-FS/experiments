@@ -1,7 +1,54 @@
 # ASM Outcome Prediction: Experimental Findings
 
-**Date:** 18 February 2026 (updated)
+**Date:** 18 February 2026 (updated); EEG rerun section added 12 October 2026
 **Dataset:** 151 patients with EEG recordings and anti-seizure medication (ASM) outcomes
+
+---
+
+## EEG Rerun on Corrected Inputs (12 October 2026)
+
+Every EEG-dependent result below this section was produced with the superseded
+27-channel, unnormalised EEG cache and is kept for the record only. The numbers here
+come from the version-2 cache (19 standard channels, microvolts, per-window z-score;
+`findings/training_configurations.md` Section 1) under the refit protocol, as the mean
+over five repeated cross-validations with the mean of the per-repeat Knapp-Hartung 95%
+CIs (`thesisStandalone/analysis/output/metrics_oof.csv`). Non-EEG results are
+unchanged.
+
+### Standalone EEG encoder comparison (exp9; EEG plus ChemBERTa drug embedding, n = 148)
+
+| Encoder | Pretrained | AUC (95% CI) |
+|---|---|---|
+| SimpleCNN | no | 0.548 (0.41-0.68) |
+| EEGNet | no | 0.495 (0.35-0.64) |
+| EEG2Vec | no | 0.489 (0.35-0.63) |
+| LaBraM architecture, from scratch | no | 0.495 (0.35-0.64) |
+| LaBraM-base, frozen features | yes | 0.482 (0.34-0.62) |
+| REVE-base, frozen features | yes | 0.497 (0.35-0.65) |
+
+### Pre-specified configurations (Table 2 of the paper)
+
+| Configuration | n | AUC (95% CI) | Previous (superseded) |
+|---|---|---|---|
+| Clinical + EEG (no drug), exp5c | 148 | 0.556 (0.41-0.71) | 0.581 |
+| Clinical + EEG, exp6b | 148 | 0.588 (0.42-0.76) | 0.590 |
+| Full model, exp7a | 108 | 0.605 (0.44-0.77) | 0.585 |
+| EEG, exp2 EEG2Vec MLP | 148 | 0.474 (0.33-0.62) | 0.452 |
+| Text + EEG, exp3a EEG2Vec | 108 | 0.503 (0.32-0.68) | 0.463 |
+| Full model, mixture of experts, exp7b | 108 | 0.551 (0.36-0.74) | 0.537 |
+| Full model with frozen REVE-base features, exp15 | 108 | 0.575 (0.40-0.75) | 0.584 |
+| Full model with frozen LaBraM-base features, exp15 | 108 | 0.578 (0.42-0.74) | not run |
+| Reduced capacity small / tiny, exp16 | 108 | 0.677 (0.52-0.83) / 0.709 (0.55-0.86) | 0.595 / 0.571 |
+| Focal-only full model, exp17 | 83 | 0.685 (0.47-0.90) | 0.629 |
+
+The SimpleCNN rows moved most (for example exp2 SimpleCNN with the SMILES Transformer
+0.438 to 0.615), consistent with BatchNorm having been starved by the volt-scale inputs.
+HEP1 external AUCs (Melbourne-trained, five-seed mean): Clinical + EEG (no drug) 0.536,
+Clinical + EEG 0.568, full model 0.575, reduced-capacity tiny 0.533, every interval
+including 0.5. Deferred and not rerun: the exp9 aggregator and embedding-size
+ablations, the exp11 grid, the inner-split protocol for the EEG items, the
+harmonised-label EEG items and the fine-tuned LaBraM-base arm of plan decision D4
+(`rerun_clean.sh` deferred list; Addendum C.5 and C.6).
 
 ---
 

@@ -40,10 +40,9 @@ Where to find them in the repository:
 | Cross-cohort clinical input | 20 dims (drug, alcohol and focal dropped; constant in HEP1) | `shared/hep_cohort.py:74` |
 | Text input | precomputed frozen embeddings, 768 dims: ClinicalBERT (pre-specified) or PubMedBERT, mask-aware token mean | `outputs/*.npy` (not in git) |
 | Drug input | precomputed frozen SMILES embeddings: ChemBERTa 768 dims (pre-specified, token mean) or SMILES Transformer 256 dims | `exp1_misc/e1_LLM+SMILES_ChemBERTa.py:33-67` |
-| EEG input, main cache (27 channels) | 200 Hz, 0.1-75 Hz bandpass, 50 Hz notch; first 300 s skipped, next 1200 s used, recordings under 600 s rejected; 10 s windows (2000 samples), at most 120, zero-padded with a padding mask; channels padded to 27; no amplitude normalisation (signals in volts); built once for the whole cohort | `exp2_fusion/config.py:17-29`; `exp2_fusion/eeg_pipeline.py:779` |
-| EEG input, cross-cohort caches (19 channels) | 19 standard 10-20 channels, 50 Hz (Melbourne) or 60 Hz (HEP1) notch, per-window z-score, amplitude clipped at 5 SD | `thesisStandalone/analysis/hep_eeg_preprocess.py:66-71` |
-| EEG encoders | every EEG window encoder in exp2-7, 9, 11, 16, 17 is trained from scratch with the model; EEG2Vec uses its mean head only (no KL term) | `exp2_fusion/models/eeg_encoders.py` |
-| Frozen pretrained models | ClinicalBERT, PubMedBERT, ChemBERTa, SMILES Transformer (embeddings precomputed); REVE-base (features precomputed, exp15 and REVE standalone only) | |
+| EEG input (version-2 cache, both cohorts) | 19 standard 10-20 channels selected by name (T3/T4/T5/T6 read as T7/T8/P7/P8; a recording is dropped if any is missing), microvolts, leading flat segment skipped, 200 Hz, 0.1-75 Hz FIR bandpass, 50 Hz (Melbourne) or 60 Hz (HEP1) notch; first 300 s skipped, next 1200 s used, recordings under 600 s rejected; 10 s windows (2000 samples), at most 120, zero-padded with a padding mask; per-window, per-channel z-score at load (floor 1e-6, no clipping) for every trained-from-scratch encoder and REVE; microvolts/100 for the pretrained LaBraM; built once per cohort on M3 (Melbourne 148 recordings kept of 157 files, HEP1 95 of 98), sidecar records counts and provenance | `shared/eeg_cache.py`; `docs/analysis_plan_clean_rerun_exp18.md` Addendum C |
+| EEG encoders | the EEG2Vec, SimpleCNN, EEGNet and LaBraM-architecture window encoders in exp2-7, 9, 16, 17 are trained from scratch with the model (EEG2Vec uses its mean head only, no KL term); the frozen LaBraM-base and REVE-base arms read stored per-window features through the `precomputed` encoder | `exp2_fusion/models/eeg_encoders.py`; `shared/eeg_features.py` |
+| Frozen pretrained models | ClinicalBERT, PubMedBERT, ChemBERTa, SMILES Transformer (embeddings precomputed); LaBraM-base and REVE-base (per-window features precomputed from the version-2 cache; exp9 frozen arms and exp15) | `shared/labram_pretrained.py`; `thesisStandalone/analysis/reve_extract_features.py` |
 
 
 ## 1a. Preprocessing: EEG conventions and the comparison with the supervisor's pipeline
@@ -171,13 +170,17 @@ encoders (encoder type `precomputed`, `shared/eeg_features.py`); the standalone 
 script no longer supplies the encoder-table row. The aggregator's token width equals
 each arm's window embedding (256 for SimpleCNN, EEGNet and EEG2Vec, 128 for the
 scratch LaBraM, 200 and 512 for the frozen LaBraM-base and REVE-base features), so the
-aggregator's parameter count differs between arms; its output width is 256 throughout. The raw-EEG arms read the cache under
-the per-window z-score; the feature sets were written from the same cache. A fine-tuned
-LaBraM-base arm is scheduled after the frozen-feature results.
+aggregator's parameter count differs between arms; its output width is 256 for every arm except the scratch LaBraM, whose aggregator output is 128 (`output_dim` in the arm list). The raw-EEG arms read the cache under
+the per-window z-score; the feature sets were written from the same cache. The scratch
+LaBraM arm is a reduced configuration (2 layers, 4 heads, 128-dim, batch 1), not a
+from-scratch counterpart of the 12-layer pretrained model. A fine-tuned LaBraM-base arm
+(plan decision D4, after the frozen-feature results) has not been run as of 2026-10-12;
+the `labram_pretrained` encoder type exists for it but no exp9 arm uses it.
 
 The exp9 aggregator ablations (attention, LSTM, max, mean-max, depth 1 and 4, embedding
-64 and 128) use the same settings. `aggregator_depth_0` is the same model as
-`aggregator_attention`.
+64 and 128) use the same settings; `aggregator_depth_0` is the same model as
+`aggregator_attention`. They were run only on the superseded cache and have not been
+rerun on the version-2 cache (deferred; Addendum C.5).
 
 
 ## 5. Cross-cohort and HEP1 models (`shared/portable_models.py`)
@@ -191,7 +194,7 @@ The exp9 aggregator ablations (attention, LSTM, max, mean-max, depth 1 and 4, em
 | Gradient clipping | none | 1.0 |
 | Scheduler | none | none |
 | Clinical input | 20 dims | 20 dims |
-| EEG input | n/a | 19-channel cache (z-scored per window, clipped at 5 SD) |
+| EEG input | n/a | version-2 19-channel cache (z-scored per window, no clipping), as in Section 1 |
 
 HEP1 external prediction: mean of the five fold models' probabilities; threshold is the
 mean of the five inner Youden thresholds.
@@ -226,11 +229,12 @@ These are differences between the code, its configs and descriptions elsewhere. 
 was introduced by this document; they are listed so the paper and future runs can be
 checked against them.
 
-1. The main 27-channel EEG cache has no amplitude normalisation (signals in volts); only
-   the 19-channel cross-cohort caches are z-scored per window. The paper's Methods says
-   recordings were "z-scored per window".
-2. The "LaBraM" arm is LaBraM's architecture trained from scratch, not the pretrained
-   foundation model.
+1. (Resolved by the EEG rerun of 2026-10-09 to 2026-10-12.) The earlier 27-channel EEG
+   cache had no amplitude normalisation (signals in volts) and kept non-scalp channels;
+   every EEG-dependent result now comes from the version-2 cache of Section 1.
+2. (Resolved by the same rerun.) The earlier "LaBraM" arm was LaBraM's architecture
+   trained from scratch; the encoder comparison now has that arm (`encoder_labram_scratch`)
+   and the pretrained, frozen LaBraM-base (`encoder_labram_pretrained_frozen`).
 3. Inner folds stratify on outcome only (outcome x cohort in exp18), while the outer
    split is multilabel.
 4. `findings/architecture.md` gives about 2M parameters for exp7a and about 4.7M for exp7b
@@ -258,8 +262,10 @@ checked against them.
 12. exp19 scores HEP1 with all 23 clinical dims, including variables constant in HEP1;
     the other cross-cohort analyses drop them (20 dims).
 13. Seeding differs: exp7 seeds once per process; exp15, exp16 and exp17 reseed every fold.
-14. `rerun_clean.sh:298` marks exp11 and the exp9 ablations as deferred; they were later
-    run with `RUN_DEFERRED=1` and their outputs exist.
+14. `rerun_clean.sh` marks exp11 and the exp9 aggregator and embedding-size ablations as
+    deferred. They were run with `RUN_DEFERRED=1` on the superseded 27-channel cache;
+    those outputs were archived on 2026-10-12 (`outputs/_archive_eeg_defect_20261009/`)
+    and the items have not been rerun on the version-2 cache.
 
 Not determined: parameter counts for exp4, exp5, exp6, exp9, exp11 and the HEP1 models
 (logged only at run time); the braindecode version (exact EEGNet and Labram internals);
